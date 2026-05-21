@@ -1,0 +1,61 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+      args:
+        WHISPER_MODEL: ${STREAM_MODEL:-phate334/Breeze-ASR-25-ct2}
+    ports:
+      - "8000:8000"
+    environment:
+      - STREAM_MODEL=${STREAM_MODEL:-phate334/Breeze-ASR-25-ct2}
+      # Mac CPU 預設 cpu + int8;有 NVIDIA GPU 可改 auto + float16
+      - DEVICE=${DEVICE:-cpu}
+      - COMPUTE_TYPE=${COMPUTE_TYPE:-int8}
+      - ASR_BACKEND=${ASR_BACKEND:-faster-whisper}
+      - MAX_CONNECTIONS=${MAX_CONNECTIONS:-20}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://llm:8001/v1}
+      - LLM_MODEL=${LLM_MODEL:-MediaTek-Research/Llama-Breeze2-8B-Instruct}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1024}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    # GPU support: uncomment 並把 DEVICE 改為 auto/cuda、COMPUTE_TYPE 改 float16
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  llm:
+    # Breeze-2-8B-Instruct 走 MediaTek 自己的 wrapper(非 vLLM)
+    # 預設模型 = MediaTek-Research/Llama-Breeze2-8B-Instruct
+    # 要換 Gemma 等 vLLM-friendly 模型請改用 ./llm/Dockerfile
+    build:
+      context: ./llm
+      dockerfile: Dockerfile.breeze2-wrapper
+      args:
+        LLM_MODEL: ${LLM_MODEL:-MediaTek-Research/Llama-Breeze2-8B-Instruct}
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    # Breeze-2-8B 在純 CPU 上幾乎不可用,實務上請只在有 NVIDIA GPU 的機器跑這個 service
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "8081:80"
+    depends_on:
+      - api
+    restart: unless-stopped

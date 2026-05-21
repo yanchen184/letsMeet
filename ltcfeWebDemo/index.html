@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>letsMeet — 即時會議提問助手</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header>
+    <h1>letsMeet · 即時會議提問助手</h1>
+    <div class="meta">
+      <span id="connState" class="badge offline">未連線</span>
+      <span id="elapsed" class="elapsed">00:00</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="controls">
+      <button id="btnStart" class="primary">● 開始錄音</button>
+      <button id="btnStop" class="ghost" disabled>■ 停止</button>
+      <button id="btnAsk" class="accent" disabled>✨ 生成可問的問題</button>
+      <button id="btnClear" class="ghost">清空逐字稿</button>
+      <button id="btnDownload" class="ghost">下載逐字稿 .md</button>
+    </section>
+
+    <section>
+      <h2>逐字稿</h2>
+      <div id="transcript" class="transcript" aria-live="polite">
+        <p class="placeholder">按「開始錄音」開始即時轉錄。</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>AI 建議的追問</h2>
+      <div id="questions" class="questions">
+        <p class="placeholder">會議中按「生成可問的問題」，這裡會顯示 3-5 個你可以直接念出來的問題。</p>
+      </div>
+    </section>
+
+    <section class="footer-note">
+      <small>
+        本系統不會將語音或文字傳到雲端，全部在你本機的 docker 環境內處理。
+        後端 ASR：faster-whisper（Breeze-ASR-25-ct2）。後端 LLM：Breeze-2-8B-Instruct。
+      </small>
+    </section>
+  </main>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>
