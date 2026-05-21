@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.local
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Runtime artefacts
+logs/
+input/processed/
+output/
+*.log
+
+# Models / large binaries
+models/
+*.bin
+*.safetensors
+
+# Node
+node_modules/
+dist/
