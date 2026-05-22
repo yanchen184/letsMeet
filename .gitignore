@@ -42,9 +42,8 @@ dist/
 # Playwright MCP scratch
 **/.playwright-mcp/
 
-# Frontend slides / demo screenshots (not source)
+# Frontend slides 殘留(README 用的截圖另外加)
 frontend/docs/
-frontend/letsmeet-*.png
 
 # Reports / specs (work-in-progress)
 reports/

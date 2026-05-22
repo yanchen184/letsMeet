@@ -1,139 +1,193 @@
-# letsMeet — 即時會議追問助手（乙方視角）
+# letsMeet
 
-開會的時候按下「開始錄音」，麥克風收的甲方發言即時轉成逐字稿；
-甲方問「有沒有什麼問題」的時候按「生成可問的問題」，
-AI 從乙方／承接方視角回 3-5 條你應該追問的問題。
+**會議現場即時逐字稿 + AI 追問助手。**
 
-## 系統組成
+開會時按錄音,你方聽到對方說的話會即時轉成逐字稿;按「產生問題」,AI 從你的視角生成 3-5 條你應該追問的問題,避免會議結束才想起來該問什麼。
 
+![letsMeet 錄音中畫面](frontend/letsmeet-recording.png)
+
+---
+
+## 特色
+
+- **即時逐字稿**:WebSocket 串流 PCM16 音訊,faster-whisper 在 server 端轉錄並即時推回前端
+- **AI 追問**:把累積逐字稿丟給任何 OpenAI-compatible LLM(預設接內網自架 Breeze2,可換 OpenAI/Ollama/LM Studio)
+- **滑動視窗摘要**:超過 6000 字會議自動摘要前段,保留最近 4000 字原文給 LLM
+- **零 build step 前端**:純 vanilla HTML/JS,沒有 React/Vue/Webpack,改 CSS 直接 reload
+- **三件套 docker-compose**:backend(FastAPI) + frontend(nginx) + caddy(HTTPS)
+
+---
+
+## 架構
+
+```mermaid
+flowchart LR
+    Browser["瀏覽器<br/>AudioWorklet"] -->|PCM16 WS| Caddy["Caddy<br/>:443 HTTPS"]
+    Caddy --> Frontend["frontend<br/>nginx :80"]
+    Frontend -->|/api/ 反代| Backend["backend<br/>FastAPI :8000<br/>+ faster-whisper"]
+    Backend -->|OpenAI API| LLM["LLM<br/>(自己接)"]
 ```
-┌──────────────┐  PCM16 WS    ┌─────────────┐  HTTP    ┌──────────┐
-│ ltcfeWebDemo │ ───────────► │ api (8000)  │ ───────► │ llm 8001 │
-│  (vanilla)   │ ◄─ JSON ───  │  FastAPI    │ ◄────────│ vLLM /   │
-└──────────────┘              │ + Whisper   │          │  Breeze  │
-       │  nginx /api 反向代理 │             │          │  wrapper │
-       └──────► web (8081) ───┴─────────────┘          └──────────┘
-```
 
-- `api/`：FastAPI。`WS /api/stream` 跑 faster-whisper 即時轉錄；`POST /api/questions` 把逐字稿丟給 LLM 生成追問。
-- `llm/`：vLLM / MediaTek Breeze2 wrapper，提供 OpenAI 相容 chat completions。
-- `web/`：nginx 把 `ltcfeWebDemo/` 的純 HTML/JS/CSS 對外發，並反向代理 `/api/*` 到 api。
-- `ltcfeWebDemo/`：純 vanilla，沒有 build step。
+| 元件 | 技術 | 角色 |
+|---|---|---|
+| `frontend/` | nginx + vanilla JS + AudioWorklet | 收音、顯示逐字稿、產問題 UI |
+| `backend/` | FastAPI + faster-whisper | WS 轉錄 / `/api/questions` LLM 橋接 |
+| `caddy/` | Caddy v2 | HTTPS 反代(secure context 麥克風才開) |
 
-## 兩種使用模式
+---
 
-**模式 A — CLI 一次性轉檔（舊功能保留）**
+## Quick Start
+
+### 1. 你需要
+
+- Docker 24+ / Docker Compose v2
+- 一個 OpenAI-compatible LLM endpoint(自己有就用,沒有可以接 [Ollama](https://ollama.com) / [LM Studio](https://lmstudio.ai) 本機跑)
+- 麥克風
+
+### 2. 設環境
+
+複製 `.env.example` → `.env`,改成你的 LLM endpoint:
 
 ```bash
-python main.py /path/to/audio.mp4  # 產出 .vtt
+cp .env.example .env
+# 編輯 .env:
+#   LLM_BASE_URL=http://你的-llm:8001/v1
+#   LLM_MODEL=你的模型名
 ```
 
-`main.py` / `processor.py` 不依賴 FastAPI，本機跑 ffmpeg + faster-whisper 即可。
-
-**模式 B — 即時會議追問（這次新加的主功能）**
-
-需要兩件事跑起來：
-1. `api/` FastAPI server（含 Whisper 模型）
-2. `llm/` 一個 OpenAI 相容的 chat completions endpoint
-
-最簡開發流程（Mac CPU，不啟動 LLM container，外接已有 LLM）：
+### 3. 起服務
 
 ```bash
-# 1. 起 api
-cd /Users/yanchen/workspace/letsMeet
-source .venv/bin/activate
-cd api
-pip install -r requirements.txt
-LLM_BASE_URL=http://your-llm-host:8001/v1 \
-LLM_MODEL=MediaTek-Research/Llama-Breeze2-8B-Instruct \
-DEVICE=cpu COMPUTE_TYPE=int8 \
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-# 2. 起 web(任一靜態 server 都行)
-cd /Users/yanchen/workspace/letsMeet/ltcfeWebDemo
-python -m http.server 8081
-# 開 http://localhost:8081
-# (此模式下前端會走 http://localhost:8000，不經過 nginx 代理)
+docker compose up -d --build
 ```
 
-## Docker Compose
+首次 build 會花 5-15 分鐘(預載 Whisper ASR 模型 `phate334/Breeze-ASR-25-ct2`)。
 
-`docker-compose.yml` 預設：
-- `DEVICE=cpu` / `COMPUTE_TYPE=int8` — Mac / 無 GPU 機可直接 build
-- `llm` service 走 `Dockerfile.breeze2-wrapper`，**必須有 NVIDIA GPU**（純 CPU 跑 8B 模型實務上不可用）
+### 4. 開頁面
 
-完整三件套（有 GPU 機器才推薦）：
+| 用途 | URL |
+|---|---|
+| HTTPS(推薦,麥克風才會開) | `https://localhost:8444` |
+| HTTP(只能看畫面,錄音會失敗) | `http://localhost:8082` |
 
-```bash
-cd /Users/yanchen/workspace/letsMeet
-HF_TOKEN=hf_xxx docker compose build
-docker compose up -d
-# web → http://localhost:8081
-# api 健康檢查 → http://localhost:8000/api/health
-```
+> **為什麼一定要 HTTPS?** 瀏覽器規定 `AudioWorklet` 跟 `getUserMedia` 只在 secure context 給用 — HTTPS 或 `localhost` 都算。
 
-只跑 api + web，把 LLM 指到外部服務：
+預設 Caddy 用 `tls internal` 自簽憑證,Chrome 第一次會跳警告,按「進階 → 繼續前往」即可(內網 demo 用)。
 
-```bash
-LLM_BASE_URL=http://your-llm-host:8001/v1 \
-docker compose up -d api web
-```
+---
 
-## API 規格
+## API
+
+### `WS /api/stream`
+
+前端透過 AudioWorklet 把 PCM16 LE / 16kHz / mono 切成 30ms 一包送上來。
+
+Server 回:
+- `{"type":"connected"}` — 連線成功
+- `{"type":"processing"}` — 收到一段音訊,送 ASR 中
+- `{"type":"transcription","text":"..."}` — 一段逐字稿
+- `{"type":"error","message":"..."}` — 錯誤
 
 ### `POST /api/questions`
 
 ```json
 {
-  "transcript": "甲方累積的逐字稿(單一字串)",
-  "prior_summary": "(可選) 上次回傳的 summary,讓伺服器跳過摘要"
+  "transcript": "累積的逐字稿(單一字串)",
+  "prior_summary": "(可選) 上次回傳的 summary,讓 server 跳過摘要"
 }
 ```
 
-回應：
+回應:
 
 ```json
 {
   "questions": [
-    {"q": "驗收標準是？", "why": "對方未說明"},
-    {"q": "誰能拍板？",   "why": "對方說『回去問』"}
+    {"q": "驗收標準是?", "why": "對方未說明"},
+    {"q": "誰能拍板?",   "why": "對方說『回去問』"}
   ],
-  "summary": "(可選) 滑動視窗摘要,前端要 cache 之後回傳",
+  "summary": "(可選) 滑動視窗摘要,前端 cache 後回傳",
   "truncated": false
 }
 ```
 
-錯誤分流：
-- `422` — `transcript` 為空
+錯誤碼:
+- `422` — transcript 為空
 - `502` — LLM 回非 JSON / HTTP 錯誤
 - `504` — LLM 超時
 
-每個 response header 都帶 `X-Request-Id`。
+每個 response 都帶 `X-Request-Id` header 方便 trace。
 
-### `WS /api/stream`
+### `GET /api/health`
 
-PCM16 LE / 16kHz / mono，前端透過 AudioWorklet 30ms/包送上來。
-
-伺服器回 `connected` / `processing` / `transcription` / `error`。
-
-## 設計文件
-
-`docs/superpowers/specs/2026-05-21-letsmeet-realtime-qa-design.md`
-有完整的 prompt、滑動視窗策略、為什麼砍掉 RAG 等決策紀錄。
-
-## 測試
-
-```bash
-cd /Users/yanchen/workspace/letsMeet/api
-source ../.venv/bin/activate
-python -m pytest --cov=app --cov-report=term-missing -q
+```json
+{"status":"ok","backend":"faster-whisper","model":"phate334/Breeze-ASR-25-ct2"}
 ```
 
-目前 ~84% 覆蓋率。`_get_stream_model`、`_transcribe_*` 等需要真 ASR 模型的路徑標 `# pragma: no cover`，屬於 integration smoke 不走 unit。
+---
 
-## 開發注意
+## 設定
 
-- Mac CPU 環境下 Whisper 模型載入慢、轉錄速度不到 1x，正式會議建議用 GPU 機或 whisper.cpp 後端（設 `WHISPER_CPP_URL`）
-- 前端目前是純 vanilla，沒有 build step；改 CSS / JS 直接 reload 瀏覽器
-- 滑動視窗觸發在 6000 字（約 30-45 分鐘會議內容），會 LLM 摘要前段保留最近 4000 字原文
-- LLM 輸出 JSON 容錯做了三層：strict → markdown fence strip → brace extract
+`docker-compose.yml` / `.env` 可調:
+
+| Env | 預設 | 說明 |
+|---|---|---|
+| `STREAM_MODEL` | `phate334/Breeze-ASR-25-ct2` | ASR 模型(HuggingFace ID) |
+| `DEVICE` | `cpu` | `cpu` / `cuda` / `auto` |
+| `COMPUTE_TYPE` | `int8` | `int8`(CPU)/ `float16`(GPU) |
+| `ASR_BACKEND` | `faster-whisper` | `faster-whisper` / `transformers` |
+| `MAX_CONNECTIONS` | `20` | 同時 WS 連線上限 |
+| `LLM_BASE_URL` | `http://10.1.1.7:31367/v1` | OpenAI-compatible endpoint |
+| `LLM_MODEL` | `MediaTek-Research/Llama-Breeze2-8B-Instruct` | 模型名 |
+| `LLM_TEMPERATURE` | `0.2` | LLM 溫度 |
+| `LLM_MAX_TOKENS` | `1024` | LLM 最大輸出 |
+
+---
+
+## 開發
+
+### Backend
+
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+LLM_BASE_URL=http://你的-llm:8001/v1 \
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### Frontend
+
+純 vanilla,沒 build step。改 `frontend/assets/*.js` / `*.css` 直接 reload 瀏覽器即可。
+
+```bash
+cd frontend
+python -m http.server 8082
+# 開 http://localhost:8082(僅當 backend 跑在同 8000 port 時可用)
+```
+
+### 測試
+
+```bash
+cd backend && pytest --cov=app --cov-report=term-missing -q
+```
+
+目前 ~84% 覆蓋率。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
+
+---
+
+## 螢幕截圖
+
+| Desktop | 錄音中 | 有內容 | Mobile |
+|---|---|---|---|
+| ![](frontend/letsmeet-desktop-default.png) | ![](frontend/letsmeet-recording.png) | ![](frontend/letsmeet-with-content.png) | ![](frontend/letsmeet-mobile-375.png) |
+
+---
+
+## 為什麼自己寫一個
+
+市面上 Otter / tl;dv / Read.ai 都是把音訊送到雲端、訂閱制、會議結束才看到摘要。letsMeet:
+
+1. **完全本地**:音訊不離開你的內網
+2. **會議中就有 AI 追問**:不是事後摘要,是讓你**現場**問出對的問題
+3. **接你自己的 LLM**:Breeze2 / Llama / GPT-4 / 任何 OpenAI-compatible 都行
+4. **不到 1000 行 code**:前端 + 後端加起來,改起來不痛
