@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>letsMeet</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="bar">
+    <div class="bar-inner">
+      <span class="logo">letsMeet</span>
+      <span id="connState" class="badge offline">待機</span>
+      <span id="elapsed" class="elapsed" aria-label="已錄時間">00:00:00</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="controls" role="group" aria-label="錄音控制">
+      <button id="btnStart" class="btn primary" type="button">錄音</button>
+      <button id="btnStop" class="btn" type="button" disabled>停止</button>
+      <button id="btnAsk" class="btn" type="button" disabled
+              title="逐字稿至少要 3 行才能產出有意義的問題">產生問題</button>
+      <button id="btnClear" class="btn danger-ghost" type="button"
+              title="清空逐字稿與問題,需要點兩次確認">清空</button>
+      <button id="btnDownload" class="btn ghost" type="button">匯出 .md</button>
+    </section>
+
+    <section class="panel" aria-labelledby="h-transcript">
+      <div class="panel-head">
+        <h2 id="h-transcript">逐字稿</h2>
+        <span id="transcriptStat" class="stat">—</span>
+      </div>
+      <div id="transcript" class="transcript" aria-live="polite">
+        <p class="placeholder">
+          按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。
+        </p>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-questions">
+      <div class="panel-head">
+        <h2 id="h-questions">建議追問</h2>
+        <span id="questionsStat" class="stat">—</span>
+      </div>
+      <div id="questions" class="questions">
+        <p class="placeholder">按「產生問題」由 AI 從逐字稿產出 3–5 個追問。</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

@@ -38,3 +38,14 @@ models/
 # Node
 node_modules/
 dist/
+
+# Playwright MCP scratch
+**/.playwright-mcp/
+
+# Frontend slides / demo screenshots (not source)
+frontend/docs/
+frontend/letsmeet-*.png
+
+# Reports / specs (work-in-progress)
+reports/
+docs/superpowers/

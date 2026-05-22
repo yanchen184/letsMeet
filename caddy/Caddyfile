@@ -1,0 +1,13 @@
+{
+  auto_https off
+  admin off
+}
+
+letsmeet.wezoomtek.com.tw:443, 10.1.1.7:443 {
+  tls /etc/letsmeet-tls/server.crt /etc/letsmeet-tls/server.key
+
+  reverse_proxy frontend:80 {
+    header_up Host {host}
+    header_up X-Real-IP {remote}
+  }
+}

@@ -8,13 +8,15 @@ RUN useradd -m -s /bin/bash appuser
 
 WORKDIR /app
 
-COPY api/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY api/app/ app/
-COPY api/data/ data/
+COPY app/ app/
+COPY data/ data/
 
-RUN mkdir -p /home/appuser/.cache/huggingface && chown -R appuser:appuser /home/appuser/.cache && chown -R appuser:appuser /app
+RUN mkdir -p /home/appuser/.cache/huggingface \
+    && chown -R appuser:appuser /home/appuser/.cache \
+    && chown -R appuser:appuser /app
 
 USER appuser
 
