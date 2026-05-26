@@ -34,9 +34,9 @@ class TestBuildContext:
         text = "甲" * (SUMMARY_TRIGGER_CHARS + 100)
         context, summary, truncated = build_context(text, prior_summary=None)
         assert truncated is True
-        assert "【前段重點摘要】" in context
-        assert "【最近原文】" in context
-        # 最近原文應該是最後 WINDOW_RECENT_CHARS 字
+        assert "【先前重點】" in context
+        assert "【最新發言】" in context
+        # 最新發言應該是最後 WINDOW_RECENT_CHARS 字
         assert context.endswith("甲" * WINDOW_RECENT_CHARS)
         # build_context 是 sync placeholder，不會真打 LLM
         assert summary is not None and "尚未摘要" in summary
@@ -171,6 +171,109 @@ class TestGenerateQuestions:
         assert result["truncated"] is True
         assert result["summary"] is None  # 用了 cache，沒新摘要要回給前端
         assert mock_chat.call_count == 1
+
+    async def test_prior_summary_marks_transcript_as_recent_without_resummarizing(self) -> None:
+        """增量產問：帶 prior_summary 時，新行原文標為【最新發言】、舊摘要當背景，且不重新摘要。"""
+        captured: dict[str, str] = {}
+
+        async def fake_chat(system, user, **kwargs):
+            assert "會議紀錄助理" not in system, "有 prior_summary 不該再摘要"
+            captured["user"] = user
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat) as mock_chat:
+            result = await generate_questions(
+                "甲方剛剛說驗收的事再看",        # 短新行
+                prior_summary="- 前段談過時程\n- 預算未定",
+            )
+
+        assert mock_chat.call_count == 1  # 只生成，不摘要
+        assert result["truncated"] is True
+        assert result["summary"] is None
+        # 新行原文出現在【最新發言】、舊摘要出現在【先前重點】
+        assert "【最新發言】" in captured["user"]
+        assert "【先前重點】" in captured["user"]
+        assert "甲方剛剛說驗收的事再看" in captured["user"]
+        assert "前段談過時程" in captured["user"]
+        # 順序：先前重點在最新發言之前
+        assert captured["user"].index("【先前重點】") < captured["user"].index("【最新發言】")
+
+    async def test_older_transcript_summarized_into_background_and_cached(self) -> None:
+        """增量首批：無 prior 但有 older_transcript → 摘要 older 當背景 + 回傳 summary 供 cache。"""
+        calls: list[str] = []
+        captured: dict[str, str] = {}
+
+        async def fake_chat(system, user, **kwargs):
+            calls.append(system)
+            if "會議紀錄助理" in system:
+                return "- 舊段:談過交期"
+            captured["user"] = user
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            result = await generate_questions(
+                "甲方剛說預算只有五十萬",     # 新行
+                prior_summary=None,
+                older_transcript="一堆已經問過的舊內容",
+            )
+
+        assert len(calls) == 2  # 摘要 older + 生成
+        assert result["truncated"] is True
+        assert result["summary"] == "- 舊段:談過交期"  # 回傳供前端 cache
+        assert "【最新發言】" in captured["user"]
+        assert "甲方剛說預算只有五十萬" in captured["user"]
+        assert "舊段:談過交期" in captured["user"]
+
+    async def test_prior_summary_wins_over_older_transcript(self) -> None:
+        """同時有 prior_summary 和 older_transcript → 用 cache,不重新摘要(省 token)。"""
+        async def fake_chat(system, user, **kwargs):
+            assert "會議紀錄助理" not in system, "已有 cache 不該再摘要"
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat) as mock_chat:
+            result = await generate_questions(
+                "新行內容",
+                prior_summary="已 cache 的摘要",
+                older_transcript="這段應該被忽略",
+            )
+        assert mock_chat.call_count == 1
+        assert result["summary"] is None
+
+    async def test_user_prompt_instructs_focus_on_recent(self) -> None:
+        """user prompt 含『優先針對【最新發言】』的聚焦指令。"""
+        captured: dict[str, str] = {}
+
+        async def fake_chat(system, user, **kwargs):
+            captured["user"] = user
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看")
+        assert "最新發言" in captured["user"]
+
+    async def test_context_hint_injected_into_user_prompt(self) -> None:
+        """有 context_hint → user prompt 含背景區塊;無則不含。"""
+        captured: dict[str, str] = {}
+
+        async def fake_chat(system, user, **kwargs):
+            captured["user"] = user
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看", context_hint="我是採購方，重點在價格與交期")
+        assert "【本場會議背景】" in captured["user"]
+        assert "採購方" in captured["user"]
+
+    async def test_no_context_hint_omits_background_block(self) -> None:
+        async def fake_chat(system, user, **kwargs):
+            assert "【本場會議背景】" not in user
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看")
+        # 空字串也視同無背景
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看", context_hint="   ")
 
     async def test_empty_transcript_raises(self) -> None:
         with pytest.raises(ValueError):

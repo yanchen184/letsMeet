@@ -339,6 +339,224 @@ body.is-recording .btn.primary::before {
   color: var(--muted);
 }
 
+/* ── 自動產問 toggle ────────────────────────────────── */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 7px 4px;
+}
+
+.toggle input {
+  accent-color: var(--danger);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.toggle:has(input:checked) {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* ── 會議背景設定 ───────────────────────────────────── */
+.context-toggle {
+  margin-left: auto;
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.context-toggle:hover { color: var(--fg); }
+
+.context-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.context-body {
+  padding: 12px clamp(12px, 2.5vw, 16px);
+}
+
+/* 情境範本快速選 */
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.preset-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.preset {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--fg);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+.preset:hover {
+  border-color: var(--fg);
+}
+
+.preset.active {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: #991b1b;
+  font-weight: 500;
+}
+
+.preset:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.context-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  resize: vertical;
+  min-height: 44px;
+}
+
+.context-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--focus);
+}
+
+/* ── panel-head 內的 inline 動作按鈕 ─────────────────── */
+.btn-inline {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--danger-border);
+  background: var(--danger-soft);
+  color: #991b1b;
+  border-radius: 5px;
+  cursor: pointer;
+  margin-left: 12px;
+}
+
+.btn-inline:hover:not(:disabled) { border-color: var(--danger); }
+
+.btn-inline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-inline.ghost-inline {
+  background: #fff;
+  border-color: var(--line);
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+.btn-inline.ghost-inline:hover { color: var(--fg); border-color: var(--fg); }
+
+.btn-inline:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ── 逐字稿行:可點選 + 選取高亮 ────────────────────── */
+.transcript .line {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-left: -6px;
+  margin-right: -6px;
+  transition: background 120ms;
+}
+
+.transcript .line:hover { background: #f4f4f5; }
+
+.transcript .line.selected {
+  background: var(--danger-soft);
+}
+
+.transcript .line.selected .ts { color: #991b1b; }
+
+.transcript .line:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* ── 問題卡:來源標籤 + 刪除鈕 ──────────────────────── */
+.question-card {
+  position: relative;
+  align-items: flex-start;
+}
+
+.question-card .q-source {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: #fafafa;
+}
+
+.question-card .q-source-auto {
+  color: #92400e;
+  background: #fef3c7;
+  border-color: #fcd34d;
+}
+
+.question-card .q-source-range {
+  color: #991b1b;
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+}
+
+.question-card .q-del {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: #a1a1aa;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.question-card .q-del:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.question-card .q-del:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 /* ── 錯誤橫幅(role=alert) ───────────────────────────── */
 .error-banner {
   display: flex;

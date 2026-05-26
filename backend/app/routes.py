@@ -108,10 +108,18 @@ def _load_transformers_model() -> dict[str, Any]:  # pragma: no cover - 需要 t
 
 
 class QuestionsRequest(BaseModel):
-    transcript: str = Field(..., description="累積的甲方逐字稿（單一字串）")
+    transcript: str = Field(..., description="要聚焦提問的逐字稿（增量模式下＝上次產問後的新行）")
     prior_summary: str | None = Field(
         default=None,
-        description="前端帶回的『前段摘要』cache；省去重新摘要的 token",
+        description="前端帶回的『前段摘要』cache；有值時直接當背景，省去重新摘要的 token",
+    )
+    older_transcript: str | None = Field(
+        default=None,
+        description="游標前『已問過』的舊逐字稿原文；無 prior_summary 時由後端摘要成背景並回傳供前端 cache",
+    )
+    context: str | None = Field(
+        default=None,
+        description="乙方提供的會議背景／角色提示；引導 AI 提問方向",
     )
 
 
@@ -132,6 +140,8 @@ async def questions(req: QuestionsRequest) -> JSONResponse:
         result = await generate_questions(
             req.transcript,
             prior_summary=req.prior_summary,
+            older_transcript=req.older_transcript,
+            context_hint=req.context,
         )
     except LLMOutputFormatError as exc:
         logger.warning("LLM output parse failed [%s]: %s", request_id, exc)

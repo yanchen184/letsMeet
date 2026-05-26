@@ -46,6 +46,12 @@ SYSTEM_PROMPT = """你是一位資深的乙方專案經理，正在參與與甲�
 你的任務：根據甲方剛才說的話（逐字稿），找出「現在該追問」的關鍵問題，
 幫助乙方在會議當下釐清需求、降低後續執行風險。
 
+聚焦原則（最重要）：
+- 問題要緊扣【最新發言】這段，那是對方「剛剛才講」的內容，也是現在最該追問的。
+- 若逐字稿含【先前重點】或【前段重點摘要】，那只是脈絡背景，不要為了它生問題；
+  只有當最新發言需要對照背景才看得懂時，才把背景當參考。
+- 不要重問背景裡明顯已經釐清、或先前已經追問過的點。
+
 提問原則（依優先序）：
 1. 需求模糊：規格、驗收標準、定義不清的詞
 2. 範圍未定：「之後再說」「再看看」「應該」這類保留語
@@ -71,13 +77,27 @@ SYSTEM_PROMPT = """你是一位資深的乙方專案經理，正在參與與甲�
 """
 
 
-USER_PROMPT_TEMPLATE = """以下是甲方剛才的發言逐字稿：
+USER_PROMPT_TEMPLATE = """以下是甲方的發言逐字稿：
 
 ---
 {transcript}
 ---
 
-請依照系統指示，產出 3-5 個乙方該追問的問題。只輸出 JSON。"""
+請依照系統指示，**優先針對【最新發言】**，產出 3-5 個乙方該追問的問題。只輸出 JSON。"""
+
+
+# 前端已切好「新行 + 舊摘要」時，把新行明確標成最新發言、舊摘要當背景脈絡
+RECENT_WITH_PRIOR_TEMPLATE = """【先前重點】（背景脈絡，不要為它生問題）
+{prior}
+
+【最新發言】（對方剛講的，請聚焦這段提問）
+{recent}"""
+
+
+CONTEXT_BLOCK_TEMPLATE = """【本場會議背景】（乙方提供，請結合此背景判斷該追問什麼）
+{context}
+
+"""
 
 
 SUMMARIZE_SYSTEM_PROMPT = f"""你是會議紀錄助理。
@@ -121,7 +141,7 @@ def build_context(
         summary = _summarize_sync_placeholder(older)
         new_summary_for_cache = summary
 
-    context = f"【前段重點摘要】\n{summary}\n\n【最近原文】\n{recent}"
+    context = RECENT_WITH_PRIOR_TEMPLATE.format(prior=summary, recent=recent)
     return context, new_summary_for_cache, True
 
 
@@ -242,12 +262,16 @@ def parse_questions_json(raw: str) -> list[dict[str, str]]:
 async def generate_questions(
     transcript: str,
     prior_summary: str | None = None,
+    older_transcript: str | None = None,
+    context_hint: str | None = None,
 ) -> dict[str, Any]:
-    """產生 3-5 個追問問題。
+    """產生 3-5 個追問問題（聚焦最新發言）。
 
     Args:
-        transcript: 累積的甲方逐字稿（單一字串）
-        prior_summary: 前端帶回的「前段摘要」cache；省去重新摘要的 token
+        transcript: 要聚焦提問的逐字稿；增量模式下＝上次產問後的新行
+        prior_summary: 前端帶回的「前段摘要」cache；有值直接當背景，省摘要 token
+        older_transcript: 游標前已問過的舊原文；無 prior_summary 時由後端摘要成背景並回傳
+        context_hint: 乙方提供的會議背景／角色提示；非空時注入 prompt 引導提問方向
 
     Returns:
         {
@@ -265,25 +289,40 @@ async def generate_questions(
         raise ValueError("transcript 不可為空")
 
     text = transcript.strip()
+    has_prior = bool(prior_summary and prior_summary.strip())
+    has_older = bool(older_transcript and older_transcript.strip())
 
-    # 滑動視窗（async 版，跟 build_context 的差異是這裡會真的呼叫 LLM 摘要）
-    if len(text) <= SUMMARY_TRIGGER_CHARS:
+    # 四種情境（依序判斷）：
+    # 1) 有 prior_summary：增量模式，前端已 cache 舊摘要 → 直接當背景，新行＝最新發言，不再摘要
+    # 2) 無 prior 但有 older_transcript：增量首批 → 摘要舊原文當背景並回傳 cache，新行＝最新發言
+    # 3) 無 older 但 transcript 超長：全文模式，後端自切滑動視窗
+    # 4) 無 older 且夠短：原文直送（系統 prompt 仍引導聚焦最新）
+    new_summary: str | None = None
+    if has_prior:
+        context = RECENT_WITH_PRIOR_TEMPLATE.format(
+            prior=prior_summary.strip(),
+            recent=text,
+        )
+        truncated = True
+    elif has_older:
+        summary = await _summarize_async(older_transcript.strip())
+        new_summary = summary
+        context = RECENT_WITH_PRIOR_TEMPLATE.format(prior=summary, recent=text)
+        truncated = True
+    elif len(text) <= SUMMARY_TRIGGER_CHARS:
         context = text
-        new_summary: str | None = None
         truncated = False
     else:
         recent = text[-WINDOW_RECENT_CHARS:]
         older = text[:-WINDOW_RECENT_CHARS]
-        if prior_summary and prior_summary.strip():
-            summary = prior_summary.strip()
-            new_summary = None
-        else:
-            summary = await _summarize_async(older)
-            new_summary = summary
-        context = f"【前段重點摘要】\n{summary}\n\n【最近原文】\n{recent}"
+        summary = await _summarize_async(older)
+        new_summary = summary
+        context = RECENT_WITH_PRIOR_TEMPLATE.format(prior=summary, recent=recent)
         truncated = True
 
     user_prompt = USER_PROMPT_TEMPLATE.format(transcript=context)
+    if context_hint and context_hint.strip():
+        user_prompt = CONTEXT_BLOCK_TEMPLATE.format(context=context_hint.strip()) + user_prompt
     raw = await _chat_completion(SYSTEM_PROMPT, user_prompt)
     questions = parse_questions_json(raw)
 

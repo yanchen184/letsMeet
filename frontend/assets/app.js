@@ -40,6 +40,12 @@
     elapsed: $("elapsed"),
     transcriptStat: $("transcriptStat"),
     questionsStat: $("questionsStat"),
+    contextHint: $("contextHint"),
+    contextBody: $("contextBody"),
+    btnContextToggle: $("btnContextToggle"),
+    chkAutoAsk: $("chkAutoAsk"),
+    btnAskRange: $("btnAskRange"),
+    btnClearSel: $("btnClearSel"),
   };
 
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -61,9 +67,34 @@
     clearConfirmTimer: null,
     askTimer: null,
     askStartedAt: 0,
+    // ── 新功能狀態 ──
+    questionItems: [],       // 累積問題 [{q, why, source}]，疊加不清空
+    seenQuestions: new Set(),// 去重用,key = q 文字
+    autoAsk: false,          // 自動產問開關
+    linesSinceAutoAsk: 0,    // 距上次自動產問累積的行數
+    selAnchor: null,         // 區間選取起點 index;null = 未選
+    selFocus: null,          // 區間選取終點 index
+    askedThrough: 0,         // 游標:已產問涵蓋到「第幾行之前」(exclusive)。新行 = transcriptLines.slice(askedThrough)
   };
 
   const MIN_LINES_TO_ASK = 3;
+  const AUTO_ASK_EVERY_LINES = 8; // 每累積這麼多行,自動產問一次
+
+  // 四種溝通情境的背景範本;點按鈕覆蓋填入 contextHint
+  const CONTEXT_PRESETS = {
+    client:
+      "我是乙方專案經理，正在跟甲方／客戶開會。請站在我的立場，幫我追問釐清需求、" +
+      "驗收標準、範圍邊界、變更誰拍板、時程與費用，把對方含糊或保留的說法挖清楚。",
+    engineer:
+      "我是 PM／需求方，正在跟工程師討論實作。請幫我追問技術可行性、工時估算依據、" +
+      "技術依賴與卡點、潛在風險、以及「做不完時砍什麼」的取捨，避免工程師低估或漏講風險。",
+    pm:
+      "我是工程師，正在跟 PM／產品方對需求。請幫我追問規格細節、需求優先序、" +
+      "驗收條件、deadline 是否合理、誰能拍板改規格，把模糊的需求變成可實作的明確條件。",
+    eng_pm:
+      "這是工程師與 PM 的協調會議，我要居中釐清雙方落差。請幫我追問：規格認知是否一致、" +
+      "估時與期程有沒有衝突、技術債與功能取捨怎麼決定、變更與責任歸屬，讓兩邊對齊。",
+  };
 
   // ─── AudioWorklet：把麥克風 PCM resample 成 16kHz int16 ──────────
   const WORKLET_CODE = `
@@ -213,9 +244,14 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.transcript.innerHTML = "";
     }
     const t = Math.floor((Date.now() - state.startEpoch) / 1000);
+    const idx = state.transcriptLines.length;
     state.transcriptLines.push({ t, text: text.trim() });
     const p = document.createElement("p");
     p.className = "line";
+    p.dataset.index = String(idx);
+    p.setAttribute("role", "button");
+    p.setAttribute("tabindex", "0");
+    p.title = "點選以選取區間（點兩行框出範圍）";
     p.innerHTML =
       `<span class="ts">${fmtElapsed(t)}</span>` +
       `<span class="x"></span>`;
@@ -225,6 +261,62 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
     updateTranscriptStat();
     refreshAskButton();
+
+    // 自動產問:每累積 AUTO_ASK_EVERY_LINES 行觸發一次
+    if (state.autoAsk) {
+      state.linesSinceAutoAsk += 1;
+      if (
+        state.linesSinceAutoAsk >= AUTO_ASK_EVERY_LINES &&
+        state.transcriptLines.length >= MIN_LINES_TO_ASK &&
+        !state.askTimer
+      ) {
+        state.linesSinceAutoAsk = 0;
+        askQuestions({ source: "auto" });
+      }
+    }
+  }
+
+  // ─── 區間選取 ────────────────────────────────────────────────────
+  function selectionRange() {
+    if (state.selAnchor === null) return null;
+    const a = state.selAnchor;
+    const b = state.selFocus === null ? a : state.selFocus;
+    return { lo: Math.min(a, b), hi: Math.max(a, b) };
+  }
+
+  function renderSelectionHighlight() {
+    const range = selectionRange();
+    dom.transcript.querySelectorAll(".line").forEach((el) => {
+      const i = Number(el.dataset.index);
+      const on = range && i >= range.lo && i <= range.hi;
+      el.classList.toggle("selected", !!on);
+    });
+    const hasSel = !!range;
+    if (dom.btnAskRange) dom.btnAskRange.hidden = !hasSel || state.transcriptLines.length === 0;
+    if (dom.btnClearSel) dom.btnClearSel.hidden = !hasSel;
+    if (dom.btnAskRange && hasSel) {
+      const n = range.hi - range.lo + 1;
+      dom.btnAskRange.textContent = `問選取區間（${n} 行）`;
+      dom.btnAskRange.disabled = !!state.askTimer;
+    }
+  }
+
+  function handleLineClick(idx) {
+    if (state.selAnchor === null || state.selFocus !== null) {
+      // 開新選取
+      state.selAnchor = idx;
+      state.selFocus = null;
+    } else {
+      // 已有起點,這次點是終點
+      state.selFocus = idx;
+    }
+    renderSelectionHighlight();
+  }
+
+  function clearSelection() {
+    state.selAnchor = null;
+    state.selFocus = null;
+    renderSelectionHighlight();
   }
 
   function refreshAskButton() {
@@ -248,6 +340,11 @@ registerProcessor('pcm16-writer', PCM16Writer);
   function doClearTranscript() {
     state.transcriptLines = [];
     state.priorSummary = null;
+    state.questionItems = [];
+    state.seenQuestions.clear();
+    state.linesSinceAutoAsk = 0;
+    state.askedThrough = 0;
+    clearSelection();
     dom.transcript.innerHTML =
       '<p class="placeholder">按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。</p>';
     dom.questions.innerHTML =
@@ -279,15 +376,52 @@ registerProcessor('pcm16-writer', PCM16Writer);
     return state.transcriptLines.map((l) => l.text).join(" ");
   }
 
-  function renderQuestions(questions) {
+  // 游標之後的「新行」原文(上次產問後新增的內容)
+  function getRecentTranscript() {
+    return state.transcriptLines
+      .slice(state.askedThrough)
+      .map((l) => l.text)
+      .join(" ");
+  }
+
+  const SOURCE_LABEL = {
+    manual: "手動",
+    auto: "自動",
+    range: "區間",
+  };
+
+  // 把新一批問題去重後疊加到 state.questionItems;回傳實際新增數
+  function addQuestions(questions, source) {
+    if (!questions || questions.length === 0) return 0;
+    let added = 0;
+    questions.forEach((q) => {
+      const key = (q.q || "").trim();
+      if (!key || state.seenQuestions.has(key)) return;
+      state.seenQuestions.add(key);
+      state.questionItems.push({ q: key, why: (q.why || "").trim(), source });
+      added += 1;
+    });
+    if (added > 0) renderQuestionsList();
+    return added;
+  }
+
+  function removeQuestion(idx) {
+    const item = state.questionItems[idx];
+    if (!item) return;
+    state.seenQuestions.delete(item.q);
+    state.questionItems.splice(idx, 1);
+    renderQuestionsList();
+  }
+
+  function renderQuestionsList() {
     dom.questions.innerHTML = "";
-    if (!questions || questions.length === 0) {
+    if (state.questionItems.length === 0) {
       dom.questions.innerHTML =
-        '<p class="placeholder">這次沒有產出問題,逐字稿可能太短了。</p>';
+        '<p class="placeholder">按「產生問題」由 AI 從逐字稿產出 3–5 個追問。</p>';
       updateQuestionsStat(0);
       return;
     }
-    questions.forEach((q, i) => {
+    state.questionItems.forEach((q, i) => {
       const card = document.createElement("article");
       card.className = "question-card";
 
@@ -310,11 +444,25 @@ registerProcessor('pcm16-writer', PCM16Writer);
         body.appendChild(why);
       }
 
+      const tag = document.createElement("span");
+      tag.className = `q-source q-source-${q.source}`;
+      tag.textContent = SOURCE_LABEL[q.source] || q.source;
+      body.appendChild(tag);
+
+      const del = document.createElement("button");
+      del.className = "q-del";
+      del.type = "button";
+      del.setAttribute("aria-label", "刪除這個問題");
+      del.title = "刪除";
+      del.textContent = "×";
+      del.addEventListener("click", () => removeQuestion(i));
+
       card.appendChild(num);
       card.appendChild(body);
+      card.appendChild(del);
       dom.questions.appendChild(card);
     });
-    updateQuestionsStat(questions.length);
+    updateQuestionsStat(state.questionItems.length);
   }
 
   // ─── WebSocket / 錄音 ────────────────────────────────────────────
@@ -429,16 +577,19 @@ registerProcessor('pcm16-writer', PCM16Writer);
     dom.btnClear.disabled = false;
     refreshAskButton();
 
-    if (!keepTranscript) clearTranscript();
+    if (!keepTranscript) doClearTranscript();
   }
 
   // ─── 生成問題 ────────────────────────────────────────────────────
-  function startAskTimer() {
+  const ASK_LABEL = { manual: "產生問題", auto: "自動產問", range: "問選取區間" };
+
+  function startAskTimer(source) {
     state.askStartedAt = Date.now();
+    const base = source === "auto" ? "自動產問中" : "思考中";
     const tick = () => {
       const e = Math.floor((Date.now() - state.askStartedAt) / 1000);
-      dom.btnAsk.textContent = `思考中 ${fmtElapsed(e)}`;
-      if (dom.questionsStat) dom.questionsStat.textContent = `思考中 ${fmtElapsed(e)}`;
+      dom.btnAsk.textContent = `${base} ${fmtElapsed(e)}`;
+      if (dom.questionsStat) dom.questionsStat.textContent = `${base} ${fmtElapsed(e)}`;
     };
     tick();
     state.askTimer = setInterval(tick, 1000);
@@ -452,20 +603,73 @@ registerProcessor('pcm16-writer', PCM16Writer);
     dom.btnAsk.textContent = "產生問題";
   }
 
-  async function askQuestions() {
+  // 取選取區間的逐字稿文字;無選取回 null
+  function getRangeTranscript() {
+    const range = selectionRange();
+    if (!range) return null;
+    return state.transcriptLines
+      .slice(range.lo, range.hi + 1)
+      .map((l) => l.text)
+      .join(" ");
+  }
+
+  // source: "manual" | "auto" | "range"
+  //
+  // 游標式增量產問：
+  //   - range  → 只送選取區間,獨立分析,不帶/不動游標與 cache
+  //   - auto   → 只送「游標後的新行」,舊內容走 prior_summary/older_transcript 當背景;
+  //              新行太少就跳過(別為 1-2 行硬產)
+  //   - manual → 同 auto 走增量;但若沒有新行,退回全文重問(使用者明確要)
+  async function askQuestions({ source = "manual" } = {}) {
     if (state.askTimer) return; // 已在跑,別重複觸發
-    const transcript = getFullTranscript();
-    if (!transcript) {
-      showError("還沒有逐字稿可以分析");
+
+    const isRange = source === "range";
+    const totalLines = state.transcriptLines.length;
+    const newLineCount = totalLines - state.askedThrough;
+
+    // 決定這次要送什麼
+    let transcript;
+    let olderTranscript = null;
+    let priorSummary = null;
+    let advanceCursor = false; // 成功後是否推進游標
+    if (isRange) {
+      transcript = getRangeTranscript();
+    } else if (newLineCount > 0) {
+      // 增量:只送新行,舊內容當背景
+      transcript = getRecentTranscript();
+      priorSummary = state.priorSummary;
+      // 還沒摘要過(cache 空)且游標前有舊行 → 把舊原文丟給後端摘要
+      if (!priorSummary && state.askedThrough > 0) {
+        olderTranscript = state.transcriptLines
+          .slice(0, state.askedThrough)
+          .map((l) => l.text)
+          .join(" ");
+      }
+      advanceCursor = true;
+    } else {
+      // 沒有新行
+      if (source === "auto") return;        // 自動:沒新內容就不產
+      transcript = getFullTranscript();      // 手動:退回全文重問
+    }
+
+    if (!transcript || !transcript.trim()) {
+      if (source !== "auto") showError("還沒有逐字稿可以分析");
       return;
     }
-    if (state.transcriptLines.length < MIN_LINES_TO_ASK) {
-      showError(`逐字稿至少要 ${MIN_LINES_TO_ASK} 行才能產出有意義的問題`);
+    // 行數門檻:看「整份」夠不夠(增量只送新行,但整場已累積足量就算數)
+    if (!isRange && totalLines < MIN_LINES_TO_ASK) {
+      if (source !== "auto") {
+        showError(`逐字稿至少要 ${MIN_LINES_TO_ASK} 行才能產出有意義的問題`);
+      }
       return;
     }
-    startAskTimer();
+
+    // 鎖住這次產問涵蓋到的行,避免送出後又有新行進來導致游標錯位
+    const cursorTarget = totalLines;
+
+    startAskTimer(source);
     refreshAskButton();
-    dom.questions.innerHTML = '<p class="placeholder">AI 正在閱讀逐字稿,通常 5-15 秒…</p>';
+    renderSelectionHighlight();
 
     try {
       const resp = await fetch(`${API_BASE}/api/questions`, {
@@ -473,7 +677,9 @@ registerProcessor('pcm16-writer', PCM16Writer);
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           transcript,
-          prior_summary: state.priorSummary,
+          prior_summary: priorSummary,
+          older_transcript: olderTranscript,
+          context: (dom.contextHint?.value || "").trim() || null,
         }),
       });
       if (!resp.ok) {
@@ -481,16 +687,34 @@ registerProcessor('pcm16-writer', PCM16Writer);
         throw new Error(err.error || `HTTP ${resp.status}`);
       }
       const data = await resp.json();
-      if (data.summary) state.priorSummary = data.summary;
-      renderQuestions(data.questions);
+      if (!isRange) {
+        if (data.summary) state.priorSummary = data.summary;
+        if (advanceCursor) {
+          state.askedThrough = cursorTarget;
+          state.linesSinceAutoAsk = 0; // 產過問就重置,避免手動產完馬上被自動觸發
+        }
+      }
+      const added = addQuestions(data.questions, source);
+      if (added === 0 && state.questionItems.length > 0) {
+        // 全是重複題,給個輕提示但不洗掉既有列表
+        showError("這批問題與既有的重複,未新增");
+      } else if (state.questionItems.length === 0) {
+        dom.questions.innerHTML =
+          '<p class="placeholder">這次沒有產出問題,逐字稿可能太短了。</p>';
+        updateQuestionsStat(0);
+      }
     } catch (err) {
       console.error(err);
       showError(`生成問題失敗:${err.message || err}`);
-      dom.questions.innerHTML = '<p class="placeholder">生成失敗,請重試。</p>';
-      updateQuestionsStat(0);
+      // 疊加模型:失敗不洗掉既有問題,只在空列表時提示
+      if (state.questionItems.length === 0) {
+        dom.questions.innerHTML = '<p class="placeholder">生成失敗,請重試。</p>';
+        updateQuestionsStat(0);
+      }
     } finally {
       stopAskTimer();
       refreshAskButton();
+      renderSelectionHighlight();
     }
   }
 
@@ -530,9 +754,79 @@ registerProcessor('pcm16-writer', PCM16Writer);
   // ─── 綁定 ────────────────────────────────────────────────────────
   dom.btnStart.addEventListener("click", startRecording);
   dom.btnStop.addEventListener("click", () => stopRecording({ keepTranscript: true }));
-  dom.btnAsk.addEventListener("click", askQuestions);
+  dom.btnAsk.addEventListener("click", () => askQuestions({ source: "manual" }));
   dom.btnClear.addEventListener("click", handleClearClick);
   dom.btnDownload.addEventListener("click", downloadTranscript);
+
+  // 自動產問開關
+  if (dom.chkAutoAsk) {
+    dom.chkAutoAsk.addEventListener("change", () => {
+      state.autoAsk = dom.chkAutoAsk.checked;
+      state.linesSinceAutoAsk = 0;
+    });
+  }
+
+  // 情境範本:點了覆蓋填入 contextHint
+  document.querySelectorAll(".preset[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tpl = CONTEXT_PRESETS[btn.dataset.preset];
+      if (!tpl || !dom.contextHint) return;
+      dom.contextHint.value = tpl;
+      dom.contextHint.focus();
+      // 標記當前選中的情境(視覺回饋)
+      document.querySelectorAll(".preset").forEach((b) =>
+        b.classList.toggle("active", b === btn)
+      );
+    });
+  });
+  // 手動編輯就清掉選中標記(代表已客製)
+  if (dom.contextHint) {
+    dom.contextHint.addEventListener("input", () => {
+      const cur = dom.contextHint.value;
+      const matched = Object.values(CONTEXT_PRESETS).includes(cur);
+      if (!matched) {
+        document.querySelectorAll(".preset.active").forEach((b) =>
+          b.classList.remove("active")
+        );
+      }
+    });
+  }
+
+  // 背景設定折疊
+  if (dom.btnContextToggle && dom.contextBody) {
+    dom.btnContextToggle.addEventListener("click", () => {
+      const collapsed = dom.contextBody.hidden;
+      dom.contextBody.hidden = !collapsed;
+      dom.btnContextToggle.setAttribute("aria-expanded", String(collapsed));
+      dom.btnContextToggle.textContent = collapsed ? "收合" : "展開";
+    });
+  }
+
+  // 逐字稿行點選(事件委派)+ 鍵盤 Enter
+  if (dom.transcript) {
+    dom.transcript.addEventListener("click", (ev) => {
+      const line = ev.target.closest(".line");
+      if (line && line.dataset.index !== undefined) {
+        handleLineClick(Number(line.dataset.index));
+      }
+    });
+    dom.transcript.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      const line = ev.target.closest(".line");
+      if (line && line.dataset.index !== undefined) {
+        ev.preventDefault();
+        handleLineClick(Number(line.dataset.index));
+      }
+    });
+  }
+
+  // 區間提問 / 取消選取
+  if (dom.btnAskRange) {
+    dom.btnAskRange.addEventListener("click", () => askQuestions({ source: "range" }));
+  }
+  if (dom.btnClearSel) {
+    dom.btnClearSel.addEventListener("click", clearSelection);
+  }
 
   // 初始 UI 狀態
   setConn("offline", "待機");

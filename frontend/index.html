@@ -21,14 +21,41 @@
       <button id="btnStop" class="btn" type="button" disabled>停止</button>
       <button id="btnAsk" class="btn" type="button" disabled
               title="逐字稿至少要 3 行才能產出有意義的問題">產生問題</button>
+      <label id="autoAskToggle" class="toggle" title="每累積數行逐字稿,自動產出追問">
+        <input id="chkAutoAsk" type="checkbox" />
+        <span>自動產問</span>
+      </label>
       <button id="btnClear" class="btn danger-ghost" type="button"
               title="清空逐字稿與問題,需要點兩次確認">清空</button>
       <button id="btnDownload" class="btn ghost" type="button">匯出 .md</button>
     </section>
 
+    <section class="panel context-panel" aria-labelledby="h-context">
+      <div class="panel-head">
+        <h2 id="h-context">會議背景</h2>
+        <button id="btnContextToggle" class="context-toggle" type="button"
+                aria-expanded="true" aria-controls="contextBody">收合</button>
+      </div>
+      <div id="contextBody" class="context-body">
+        <div class="preset-row" role="group" aria-label="情境範本">
+          <span class="preset-label">情境範本</span>
+          <button class="preset" type="button" data-preset="client">跟甲方溝通</button>
+          <button class="preset" type="button" data-preset="engineer">跟工程師溝通</button>
+          <button class="preset" type="button" data-preset="pm">跟 PM 溝通</button>
+          <button class="preset" type="button" data-preset="eng_pm">工程師 × PM</button>
+        </div>
+        <textarea id="contextHint" class="context-input" rows="3"
+          placeholder="先告訴 AI 你的角色與重點，例如：我是採購方，重點在價格、交期與保固。點上方範本可快速帶入，錄音中也能隨時補充。"></textarea>
+      </div>
+    </section>
+
     <section class="panel" aria-labelledby="h-transcript">
       <div class="panel-head">
         <h2 id="h-transcript">逐字稿</h2>
+        <button id="btnAskRange" class="btn-inline" type="button" hidden
+                title="只針對選取的逐字稿區間產生問題">問選取區間</button>
+        <button id="btnClearSel" class="btn-inline ghost-inline" type="button" hidden
+                title="取消選取">取消選取</button>
         <span id="transcriptStat" class="stat">—</span>
       </div>
       <div id="transcript" class="transcript" aria-live="polite">
