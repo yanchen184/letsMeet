@@ -12,6 +12,10 @@
 
 - **即時逐字稿**:WebSocket 串流 PCM16 音訊,faster-whisper 在 server 端轉錄並即時推回前端
 - **AI 追問**:把累積逐字稿丟給任何 OpenAI-compatible LLM(預設接內網自架 Breeze2,可換 OpenAI/Ollama/LM Studio)
+- **產問去重**:把畫面上已有的問題一併餵給 LLM,叫它別重複或產出意思相近的題目,寧可少問也不灌水
+- **增量聚焦**:游標只把「上次產問後的新發言」送 LLM,舊內容轉成背景摘要,問題緊扣對話最新部分
+- **雙欄脈絡**:「我的角色與重點」+「會議資訊」兩欄,引導 AI 站在你的視角提問
+- **錄音匯出 WAV**:停止錄音時把整場音訊打包成標準 WAV 下載,留存原始錄音
 - **滑動視窗摘要**:超過 6000 字會議自動摘要前段,保留最近 4000 字原文給 LLM
 - **零 build step 前端**:純 vanilla HTML/JS,沒有 React/Vue/Webpack,改 CSS 直接 reload
 - **三件套 docker-compose**:backend(FastAPI) + frontend(nginx) + caddy(HTTPS)
@@ -92,8 +96,11 @@ Server 回:
 
 ```json
 {
-  "transcript": "累積的逐字稿(單一字串)",
-  "prior_summary": "(可選) 上次回傳的 summary,讓 server 跳過摘要"
+  "transcript": "要聚焦提問的逐字稿(增量模式＝上次產問後的新行)",
+  "prior_summary": "(可選) 上次回傳的 summary,讓 server 跳過摘要",
+  "older_transcript": "(可選) 游標前已問過的舊原文;無 prior_summary 時由 server 摘要成背景並回傳",
+  "context": "(可選) 你的角色與重點＋會議資訊,引導 AI 提問方向",
+  "asked_questions": ["(可選) 畫面上已有的問題清單,讓 AI 避免重複或近似"]
 }
 ```
 
@@ -171,7 +178,7 @@ python -m http.server 8082
 cd backend && pytest --cov=app --cov-report=term-missing -q
 ```
 
-目前 ~84% 覆蓋率。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
+目前 68 passed、~85% 覆蓋率。需要真 ASR 模型 / 真 WS 串流的路徑標 `# pragma: no cover`,屬 integration smoke。
 
 ---
 
