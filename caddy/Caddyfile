@@ -1,6 +1,8 @@
 {
   auto_https off
   admin off
+  # 手機等 client 不送 SNI（直接打 https://10.1.1.7:8444）時，套用域名憑證而非拒絕握手
+  default_sni letsmeet.wezoomtek.com.tw
 }
 
 letsmeet.wezoomtek.com.tw:443, 10.1.1.7:443 {
