@@ -275,6 +275,48 @@ class TestGenerateQuestions:
         with patch("app.llm_client._chat_completion", side_effect=fake_chat):
             await generate_questions("甲方說我們再看", context_hint="   ")
 
+    async def test_asked_questions_injected_into_user_prompt(self) -> None:
+        """有 asked_questions → user prompt 含『已問過的問題』清單,每題逐條列出。"""
+        captured: dict[str, str] = {}
+
+        async def fake_chat(system, user, **kwargs):
+            captured["user"] = user
+            return json.dumps({"questions": [{"q": "新角度？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions(
+                "甲方說驗收再看",
+                asked_questions=["驗收標準是什麼？", "交期能否提前？"],
+            )
+        assert "【已問過的問題】" in captured["user"]
+        assert "驗收標準是什麼？" in captured["user"]
+        assert "交期能否提前？" in captured["user"]
+
+    async def test_empty_asked_questions_omits_block(self) -> None:
+        """asked_questions 為 None / 空 / 全空白 → 不注入清單區塊。"""
+        async def fake_chat(system, user, **kwargs):
+            assert "【已問過的問題】" not in user
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看")
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看", asked_questions=[])
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看", asked_questions=["  ", ""])
+
+    async def test_system_prompt_instructs_dedup(self) -> None:
+        """系統 prompt 含去重指令。"""
+        captured: dict[str, str] = {}
+
+        async def fake_chat(system, user, **kwargs):
+            captured["system"] = system
+            return json.dumps({"questions": [{"q": "X？", "why": "Y"}]})
+
+        with patch("app.llm_client._chat_completion", side_effect=fake_chat):
+            await generate_questions("甲方說我們再看")
+        assert "去重原則" in captured["system"]
+
     async def test_empty_transcript_raises(self) -> None:
         with pytest.raises(ValueError):
             await generate_questions("")

@@ -52,6 +52,12 @@ SYSTEM_PROMPT = """你是一位資深的乙方專案經理，正在參與與甲�
   只有當最新發言需要對照背景才看得懂時，才把背景當參考。
 - 不要重問背景裡明顯已經釐清、或先前已經追問過的點。
 
+去重原則（重要）：
+- 若提供了【已問過的問題】清單，你產的每一題都必須是「新的角度」，
+  不可與清單中任何一題相同或意思相近（換句話說、改個措辭但實質一樣也算重複）。
+- 如果最新發言能追問的點都已經在清單裡了，寧可少問幾題、甚至只回最有價值的 1 題，
+  也不要硬湊數量去重複既有問題。
+
 提問原則（依優先序）：
 1. 需求模糊：規格、驗收標準、定義不清的詞
 2. 範圍未定：「之後再說」「再看看」「應該」這類保留語
@@ -96,6 +102,12 @@ RECENT_WITH_PRIOR_TEMPLATE = """【先前重點】（背景脈絡，不要為它
 
 CONTEXT_BLOCK_TEMPLATE = """【本場會議背景】（乙方提供，請結合此背景判斷該追問什麼）
 {context}
+
+"""
+
+
+ASKED_BLOCK_TEMPLATE = """【已問過的問題】（這些都問過了，請勿重複或產出意思相近的）
+{asked}
 
 """
 
@@ -264,6 +276,7 @@ async def generate_questions(
     prior_summary: str | None = None,
     older_transcript: str | None = None,
     context_hint: str | None = None,
+    asked_questions: list[str] | None = None,
 ) -> dict[str, Any]:
     """產生 3-5 個追問問題（聚焦最新發言）。
 
@@ -272,6 +285,7 @@ async def generate_questions(
         prior_summary: 前端帶回的「前段摘要」cache；有值直接當背景，省摘要 token
         older_transcript: 游標前已問過的舊原文；無 prior_summary 時由後端摘要成背景並回傳
         context_hint: 乙方提供的會議背景／角色提示；非空時注入 prompt 引導提問方向
+        asked_questions: 畫面上已存在的問題文字清單；注入 prompt 叫 LLM 避免重複或近似
 
     Returns:
         {
@@ -321,6 +335,13 @@ async def generate_questions(
         truncated = True
 
     user_prompt = USER_PROMPT_TEMPLATE.format(transcript=context)
+
+    # 已問過清單在前：去重指令在動筆前就被讀到
+    asked_clean = [q.strip() for q in (asked_questions or []) if q and q.strip()]
+    if asked_clean:
+        asked_block = "\n".join(f"- {q}" for q in asked_clean)
+        user_prompt = ASKED_BLOCK_TEMPLATE.format(asked=asked_block) + user_prompt
+
     if context_hint and context_hint.strip():
         user_prompt = CONTEXT_BLOCK_TEMPLATE.format(context=context_hint.strip()) + user_prompt
     raw = await _chat_completion(SYSTEM_PROMPT, user_prompt)

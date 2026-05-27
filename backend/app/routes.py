@@ -121,6 +121,10 @@ class QuestionsRequest(BaseModel):
         default=None,
         description="乙方提供的會議背景／角色提示；引導 AI 提問方向",
     )
+    asked_questions: list[str] | None = Field(
+        default=None,
+        description="畫面上已存在的問題文字清單；注入 prompt 讓 AI 避免產出重複或近似的問題",
+    )
 
 
 @router.post("/questions", response_model=None)
@@ -142,6 +146,7 @@ async def questions(req: QuestionsRequest) -> JSONResponse:
             prior_summary=req.prior_summary,
             older_transcript=req.older_transcript,
             context_hint=req.context,
+            asked_questions=req.asked_questions,
         )
     except LLMOutputFormatError as exc:
         logger.warning("LLM output parse failed [%s]: %s", request_id, exc)
