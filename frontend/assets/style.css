@@ -430,6 +430,17 @@ body.is-recording .btn.primary::before {
   outline-offset: 2px;
 }
 
+.context-sublabel {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.context-sublabel:not(:first-of-type),
+.context-input + .context-sublabel {
+  margin-top: 12px;
+}
+
 .context-input {
   width: 100%;
   font: inherit;

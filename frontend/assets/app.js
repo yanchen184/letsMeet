@@ -41,6 +41,7 @@
     transcriptStat: $("transcriptStat"),
     questionsStat: $("questionsStat"),
     contextHint: $("contextHint"),
+    meetingInfo: $("meetingInfo"),
     contextBody: $("contextBody"),
     btnContextToggle: $("btnContextToggle"),
     chkAutoAsk: $("chkAutoAsk"),
@@ -75,8 +76,11 @@
     selAnchor: null,         // 區間選取起點 index;null = 未選
     selFocus: null,          // 區間選取終點 index
     askedThrough: 0,         // 游標:已產問涵蓋到「第幾行之前」(exclusive)。新行 = transcriptLines.slice(askedThrough)
+    audioChunks: [],         // 錄音 PCM 累積 [Int16Array, ...]，停止時拼成 WAV
+    audioSamples: 0,         // 已累積 sample 數，用來算時長與配置 buffer
   };
 
+  const RECORD_SAMPLE_RATE = 16000; // 與 AudioWorklet targetSampleRate 一致
   const MIN_LINES_TO_ASK = 3;
   const AUTO_ASK_EVERY_LINES = 8; // 每累積這麼多行,自動產問一次
 
@@ -344,6 +348,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
     state.seenQuestions.clear();
     state.linesSinceAutoAsk = 0;
     state.askedThrough = 0;
+    state.audioChunks = [];
+    state.audioSamples = 0;
     clearSelection();
     dom.transcript.innerHTML =
       '<p class="placeholder">按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。</p>';
@@ -519,6 +525,10 @@ registerProcessor('pcm16-writer', PCM16Writer);
         processorOptions: { targetSampleRate: 16000, frameDurationMs: 30 },
       });
       processor.port.onmessage = (ev) => {
+        // 累積 PCM 供停止時匯出 WAV(複本,避免與 ws.send 共用同一 buffer 出意外)
+        const pcm = new Int16Array(ev.data.slice(0));
+        state.audioChunks.push(pcm);
+        state.audioSamples += pcm.length;
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
           state.ws.send(ev.data);
         }
@@ -536,6 +546,9 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.btnClear.disabled = true;
       resetClearConfirm();
       if (state.transcriptLines.length === 0) {
+        // 全新一段:清空上一場的音訊累積(續錄則接著累積)
+        state.audioChunks = [];
+        state.audioSamples = 0;
         startElapsed();
       }
     } catch (err) {
@@ -553,13 +566,32 @@ registerProcessor('pcm16-writer', PCM16Writer);
     }
   }
 
-  function stopRecording({ keepTranscript = true } = {}) {
+  function stopRecording({ keepTranscript = true, exportAudio = false } = {}) {
     state.isRecording = false;
     try { state.audioSource?.disconnect(); } catch (_) {}
     try {
+      // flush 會讓 worklet 補送最後一包(非同步回到 onmessage),稍後再打包 WAV
       state.audioProc?.port.postMessage({ type: "flush" });
-      state.audioProc?.disconnect();
     } catch (_) {}
+    // 使用者主動停止 → 等 flush 的最後一包進來後匯出整場 WAV
+    if (exportAudio && state.audioSamples > 0) {
+      const proc = state.audioProc;
+      const chunksRef = state.audioChunks; // 抓 reference,避免後續清空影響匯出
+      setTimeout(() => {
+        try { proc?.disconnect(); } catch (_) {}
+        if (chunksRef.length) {
+          const blob = buildWavBlob(chunksRef, RECORD_SAMPLE_RATE);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = buildMeetingFilename("wav");
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+      }, 150);
+    } else {
+      try { state.audioProc?.disconnect(); } catch (_) {}
+    }
     try { state.mediaStream?.getTracks().forEach((t) => t.stop()); } catch (_) {}
     try { state.ws?.close(); } catch (_) {}
     state.ws = null;
@@ -620,6 +652,17 @@ registerProcessor('pcm16-writer', PCM16Writer);
   //   - auto   → 只送「游標後的新行」,舊內容走 prior_summary/older_transcript 當背景;
   //              新行太少就跳過(別為 1-2 行硬產)
   //   - manual → 同 auto 走增量;但若沒有新行,退回全文重問(使用者明確要)
+  // 把「我的角色與重點」+「會議資訊」兩欄合併成一段帶標籤的脈絡送給後端。
+  // 兩欄都空 → 回 null(後端 context 可選)。
+  function buildContext() {
+    const role = (dom.contextHint?.value || "").trim();
+    const info = (dom.meetingInfo?.value || "").trim();
+    const parts = [];
+    if (role) parts.push(`【我的角色與重點】\n${role}`);
+    if (info) parts.push(`【會議資訊】\n${info}`);
+    return parts.length ? parts.join("\n\n") : null;
+  }
+
   async function askQuestions({ source = "manual" } = {}) {
     if (state.askTimer) return; // 已在跑,別重複觸發
 
@@ -679,7 +722,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
           transcript,
           prior_summary: priorSummary,
           older_transcript: olderTranscript,
-          context: (dom.contextHint?.value || "").trim() || null,
+          context: buildContext(),
+          asked_questions: state.questionItems.map((it) => it.q),
         }),
       });
       if (!resp.ok) {
@@ -741,19 +785,48 @@ registerProcessor('pcm16-writer', PCM16Writer);
     URL.revokeObjectURL(url);
   }
 
-  function buildMeetingFilename() {
+  function buildMeetingFilename(ext = "md") {
     const d = new Date();
     const y = d.getFullYear();
     const mo = pad2(d.getMonth() + 1);
     const da = pad2(d.getDate());
     const hh = pad2(d.getHours());
     const mm = pad2(d.getMinutes());
-    return `meeting_${y}-${mo}-${da}_${hh}${mm}.md`;
+    return `meeting_${y}-${mo}-${da}_${hh}${mm}.${ext}`;
   }
+
+  // 把累積的 16-bit PCM(mono)包成標準 WAV blob
+  function buildWavBlob(chunks, sampleRate) {
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const dataBytes = total * 2;
+    const buf = new ArrayBuffer(44 + dataBytes);
+    const dv = new DataView(buf);
+    const wstr = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+    wstr(0, "RIFF");
+    dv.setUint32(4, 36 + dataBytes, true);
+    wstr(8, "WAVE");
+    wstr(12, "fmt ");
+    dv.setUint32(16, 16, true);       // PCM fmt chunk size
+    dv.setUint16(20, 1, true);        // audio format = PCM
+    dv.setUint16(22, 1, true);        // channels = mono
+    dv.setUint32(24, sampleRate, true);
+    dv.setUint32(28, sampleRate * 2, true); // byte rate = rate * channels * bytesPerSample
+    dv.setUint16(32, 2, true);        // block align = channels * bytesPerSample
+    dv.setUint16(34, 16, true);       // bits per sample
+    wstr(36, "data");
+    dv.setUint32(40, dataBytes, true);
+    let off = 44;
+    for (const c of chunks) {
+      for (let i = 0; i < c.length; i++) { dv.setInt16(off, c[i], true); off += 2; }
+    }
+    return new Blob([buf], { type: "audio/wav" });
+  }
+
 
   // ─── 綁定 ────────────────────────────────────────────────────────
   dom.btnStart.addEventListener("click", startRecording);
-  dom.btnStop.addEventListener("click", () => stopRecording({ keepTranscript: true }));
+  dom.btnStop.addEventListener("click", () => stopRecording({ keepTranscript: true, exportAudio: true }));
   dom.btnAsk.addEventListener("click", () => askQuestions({ source: "manual" }));
   dom.btnClear.addEventListener("click", handleClearClick);
   dom.btnDownload.addEventListener("click", downloadTranscript);
