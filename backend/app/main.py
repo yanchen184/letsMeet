@@ -11,7 +11,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import CORS_ORIGINS
+from app.config import CORS_ORIGINS, DB_PATH
+from app.db import init_db
 from app.routes import _get_stream_model, router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """啟動時預載 Whisper 模型。"""
+    logger.info("初始化資料庫 path=%s", DB_PATH)
+    init_db(DB_PATH)
     logger.info("預載 Whisper 模型...")
     _get_stream_model()
     logger.info("Whisper 模型就緒")
