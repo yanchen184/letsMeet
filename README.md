@@ -14,6 +14,7 @@
 - **AI 追問**:把累積逐字稿丟給任何 OpenAI-compatible LLM(預設接內網自架 Breeze2,可換 OpenAI/Ollama/LM Studio)
 - **即時 Chat**:邊開會邊跟 AI 來回對談 — 問「對方剛剛對交期怎麼說」、討論「接下來該追問什麼」,回覆 SSE streaming 逐字浮現,對話只存前端記憶體
 - **重點摘要折疊**:每次產問順手把該批新發言壓成條列重點,主畫面只看摘要、原文預設折疊,需要核對時再展開
+- **會議記錄持久化**:開完會把標題、重點摘要、完整逐字稿、產出的追問存進 SQLite,之後在「歷史會議」清單翻閱、展開重看(無登入,用填寫者標記歸屬)
 - **產問去重**:把畫面上已有的問題一併餵給 LLM,叫它別重複或產出意思相近的題目,寧可少問也不灌水
 - **增量聚焦**:游標只把「上次產問後的新發言」送 LLM,舊內容轉成背景摘要,問題緊扣對話最新部分
 - **雙欄脈絡**:「我的角色與重點」+「會議資訊」兩欄,引導 AI 站在你的視角提問
@@ -167,6 +168,44 @@ data: [DONE]
 
 `422`:messages 為空或內容全空白。連線建立後的上游錯誤(超時 / HTTP)走 `data: {"error":"..."}` 事件而非 HTTP code。
 
+### `POST /api/meetings`
+
+存一場會議記錄(摘要＋逐字稿＋追問)。
+
+```json
+{
+  "title": "與甲方交期會議",
+  "owner": "YC",
+  "context": "(可選) 角色＋會議資訊",
+  "summary": "(可選) 重點摘要",
+  "transcript": "(可選) 完整原始逐字稿",
+  "questions": [{"q": "驗收標準?", "why": "未說明"}]
+}
+```
+
+回應:`{"id": 1}`。`422`:title 或 owner 為空。
+
+### `GET /api/meetings`
+
+歷史會議列表(輕量欄位,依時間新到舊)。可選 `?owner=YC` 篩選歸屬。
+
+```json
+{ "meetings": [{"id": 1, "title": "與甲方交期會議", "owner": "YC", "created_at": "2026-05-28T..."}] }
+```
+
+### `GET /api/meetings/{id}`
+
+單場會議完整內容(摘要＋逐字稿＋追問)。`404`:找不到該場會議。
+
+```json
+{
+  "id": 1, "title": "與甲方交期會議", "owner": "YC",
+  "context": "...", "created_at": "2026-05-28T...",
+  "summary": "- 重點一\n- 重點二", "transcript": "完整逐字稿",
+  "questions": [{"q": "驗收標準?", "why": "未說明"}]
+}
+```
+
 ### `GET /api/health`
 
 ```json
@@ -190,6 +229,7 @@ data: [DONE]
 | `LLM_MODEL` | `MediaTek-Research/Llama-Breeze2-8B-Instruct` | 模型名 |
 | `LLM_TEMPERATURE` | `0.2` | LLM 溫度 |
 | `LLM_MAX_TOKENS` | `1024` | LLM 最大輸出 |
+| `LETSMEET_DB_PATH` | `/data/letsmeet.db` | SQLite 會議記錄路徑(docker volume) |
 
 ---
 
@@ -221,7 +261,7 @@ python -m http.server 8082
 cd backend && pytest --cov=app --cov-report=term-missing -q
 ```
 
-目前 82 passed、~89% 覆蓋率。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
+目前 94 passed、~90% 覆蓋率。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
 
 ---
 
