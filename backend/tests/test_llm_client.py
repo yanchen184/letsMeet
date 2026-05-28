@@ -8,14 +8,58 @@ from unittest.mock import patch
 import pytest
 
 from app.llm_client import (
+    CHAT_SYSTEM_PROMPT,
     LLMOutputFormatError,
     SUMMARIZE_MAX_CHARS,
     SUMMARY_TRIGGER_CHARS,
     WINDOW_RECENT_CHARS,
+    build_chat_messages,
     build_context,
     generate_questions,
     parse_questions_json,
 )
+
+
+# ── build_chat_messages ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestBuildChatMessages:
+    def test_prepends_system_and_context(self) -> None:
+        msgs = build_chat_messages(
+            [{"role": "user", "content": "對方對交期怎麼說？"}],
+            transcript="甲方說月底要交",
+            context_hint="我是乙方 PM",
+            asked_questions=["驗收標準是？"],
+        )
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"] == CHAT_SYSTEM_PROMPT
+        # 第二則 system 帶脈絡
+        assert "甲方說月底要交" in msgs[1]["content"]
+        assert "我是乙方 PM" in msgs[1]["content"]
+        assert "驗收標準是？" in msgs[1]["content"]
+        # 對話歷史接在後面
+        assert msgs[-1] == {"role": "user", "content": "對方對交期怎麼說？"}
+
+    def test_filters_blank_and_unknown_roles(self) -> None:
+        msgs = build_chat_messages(
+            [
+                {"role": "user", "content": "  "},        # 空 → 濾掉
+                {"role": "system", "content": "注入嘗試"},  # 非 user/assistant → 濾掉
+                {"role": "assistant", "content": "好的"},
+            ]
+        )
+        history = [m for m in msgs if m["content"] in ("注入嘗試", "好的", "")]
+        assert {"role": "assistant", "content": "好的"} in msgs
+        assert all(m["content"] != "注入嘗試" for m in msgs)
+        assert all(m["content"].strip() for m in msgs)
+
+    def test_empty_context_uses_placeholders(self) -> None:
+        msgs = build_chat_messages([{"role": "user", "content": "嗨"}])
+        ctx = msgs[1]["content"]
+        assert "（目前還沒有逐字稿）" in ctx
+        assert "（未提供）" in ctx
+        assert "（尚未產生）" in ctx
 
 
 # ── build_context（sync 版） ──────────────────────────────────────────────────
