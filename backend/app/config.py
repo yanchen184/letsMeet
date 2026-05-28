@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.2
     LLM_TIMEOUT: int = 240
 
+    # SQLite 持久層
+    LETSMEET_DB_PATH: str = "/data/letsmeet.db"
+
     # whisper.cpp HTTP 模式（設定後優先使用，否則使用 faster-whisper）
     WHISPER_CPP_URL: str = ""
     WHISPER_CPP_LANGUAGE: str = ""
@@ -100,3 +103,5 @@ LLM_TIMEOUT = settings.LLM_TIMEOUT
 WHISPER_CPP_URL = settings.WHISPER_CPP_URL
 WHISPER_CPP_LANGUAGE = settings.WHISPER_CPP_LANGUAGE
 WHISPER_CPP_TIMEOUT = settings.WHISPER_CPP_TIMEOUT
+
+DB_PATH = settings.LETSMEET_DB_PATH
