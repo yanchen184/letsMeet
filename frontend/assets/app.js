@@ -1126,6 +1126,9 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (detailView) detailView.hidden = true;
     // 清掉 detail 內容
     if (detailView) detailView.innerHTML = "";
+    // 重置標題過濾,避免重開時輸入框殘留舊文字與未過濾列表不一致
+    const filterInput = modal.querySelector(".history-filter");
+    if (filterInput) filterInput.value = "";
   }
 
   async function loadHistoryList() {
@@ -1231,7 +1234,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
       const resp = await fetch(`${API_BASE}/api/meetings/${encodeURIComponent(id)}`);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || `HTTP ${resp.status}`);
+        throw new Error(errData.error || errData.detail || `HTTP ${resp.status}`);
       }
       const mtg = await resp.json();
       renderHistoryDetail(mtg, detailView, modal);
