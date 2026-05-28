@@ -47,6 +47,13 @@
     chkAutoAsk: $("chkAutoAsk"),
     btnAskRange: $("btnAskRange"),
     btnClearSel: $("btnClearSel"),
+    digestArea: $("digestArea"),
+    digestList: $("digestList"),
+    chatLog: $("chatLog"),
+    chatForm: $("chatForm"),
+    chatInput: $("chatInput"),
+    chatSend: $("chatSend"),
+    chatStat: $("chatStat"),
   };
 
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -78,6 +85,9 @@
     askedThrough: 0,         // 游標:已產問涵蓋到「第幾行之前」(exclusive)。新行 = transcriptLines.slice(askedThrough)
     audioChunks: [],         // 錄音 PCM 累積 [Int16Array, ...]，停止時拼成 WAV
     audioSamples: 0,         // 已累積 sample 數，用來算時長與配置 buffer
+    digests: [],             // 重點摘要 [{from, to, summary}]，每次產問順手 append
+    chatHistory: [],         // chat 對話 [{role, content}]，只存記憶體
+    chatStreaming: false,    // chat 串流進行中，避免重複送出
   };
 
   const RECORD_SAMPLE_RATE = 16000; // 與 AudioWorklet targetSampleRate 一致
@@ -350,11 +360,15 @@ registerProcessor('pcm16-writer', PCM16Writer);
     state.askedThrough = 0;
     state.audioChunks = [];
     state.audioSamples = 0;
+    state.digests = [];
+    state.chatHistory = [];
     clearSelection();
     dom.transcript.innerHTML =
       '<p class="placeholder">按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。</p>';
     dom.questions.innerHTML =
       '<p class="placeholder">按「產生問題」由 AI 從逐字稿產出 3–5 個追問。</p>';
+    renderDigests();
+    renderChatLog();
     updateTranscriptStat();
     updateQuestionsStat(0);
     refreshAskButton();
@@ -469,6 +483,177 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.questions.appendChild(card);
     });
     updateQuestionsStat(state.questionItems.length);
+  }
+
+  // ─── 重點摘要 ────────────────────────────────────────────────────
+  function renderDigests() {
+    if (!dom.digestArea || !dom.digestList) return;
+    if (state.digests.length === 0) {
+      dom.digestArea.hidden = true;
+      dom.digestList.innerHTML = "";
+      return;
+    }
+    dom.digestArea.hidden = false;
+    dom.digestList.innerHTML = "";
+    state.digests.forEach((d, i) => {
+      const block = document.createElement("div");
+      block.className = "digest-block";
+
+      const meta = document.createElement("div");
+      meta.className = "digest-meta";
+      meta.textContent = `第 ${i + 1} 段（第 ${d.from + 1}–${d.to} 行）`;
+      block.appendChild(meta);
+
+      const body = document.createElement("div");
+      body.className = "digest-text";
+      if (d.summary) {
+        body.textContent = d.summary;
+      } else {
+        body.className = "digest-text digest-failed";
+        body.textContent = "（這段摘要產生失敗）";
+      }
+      block.appendChild(body);
+      dom.digestList.appendChild(block);
+    });
+  }
+
+  // 把指定行區間 [from, to) 的逐字稿壓成重點，append 進 state.digests。
+  // 失敗不擋主流程，存 summary=null 由 render 顯示佔位。
+  async function appendDigest(from, to) {
+    if (to <= from) return;
+    const text = state.transcriptLines
+      .slice(from, to)
+      .map((l) => l.text)
+      .join(" ");
+    if (!text.trim()) return;
+    const entry = { from, to, summary: null };
+    state.digests.push(entry);
+    renderDigests();
+    try {
+      const resp = await fetch(`${API_BASE}/api/digest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: text }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        entry.summary = data.summary || "";
+      }
+    } catch (err) {
+      console.error("digest failed", err);
+    } finally {
+      renderDigests();
+    }
+  }
+
+  // ─── Chat（SSE streaming）────────────────────────────────────────
+  function updateChatStat() {
+    if (!dom.chatStat) return;
+    const n = state.chatHistory.length;
+    dom.chatStat.textContent = n === 0 ? "—" : `${n} 則`;
+  }
+
+  // 重畫整個對話；streamingEl 為 true 時最後一則 assistant 標成串流中
+  function renderChatLog() {
+    if (!dom.chatLog) return;
+    if (state.chatHistory.length === 0) {
+      dom.chatLog.innerHTML =
+        '<p class="placeholder">隨時問 AI 剛剛逐字稿講了什麼，或一起討論接下來該怎麼問。</p>';
+      updateChatStat();
+      return;
+    }
+    dom.chatLog.innerHTML = "";
+    state.chatHistory.forEach((m) => {
+      const bubble = document.createElement("div");
+      bubble.className = `chat-msg chat-${m.role}`;
+      bubble.textContent = m.content;
+      dom.chatLog.appendChild(bubble);
+    });
+    dom.chatLog.scrollTop = dom.chatLog.scrollHeight;
+    updateChatStat();
+  }
+
+  async function sendChat() {
+    if (state.chatStreaming) return;
+    const text = (dom.chatInput.value || "").trim();
+    if (!text) return;
+
+    state.chatHistory.push({ role: "user", content: text });
+    const assistantMsg = { role: "assistant", content: "" };
+    state.chatHistory.push(assistantMsg);
+    dom.chatInput.value = "";
+    state.chatStreaming = true;
+    dom.chatSend.disabled = true;
+    renderChatLog();
+
+    // 帶到後端的對話歷史(不含剛 push 的空 assistant 佔位)
+    const history = state.chatHistory
+      .slice(0, -1)
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: history,
+          transcript: getFullTranscript(),
+          context: buildContext(),
+          asked_questions: state.questionItems.map((it) => it.q),
+        }),
+      });
+      if (!resp.ok || !resp.body) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamError = null;
+
+      // SSE：以 \n\n 分隔事件，每事件一行 data:
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop(); // 最後一段可能不完整，留著
+        for (const ev of events) {
+          const line = ev.trim();
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          try {
+            const obj = JSON.parse(payload);
+            if (obj.error) {
+              streamError = obj.error;
+            } else if (obj.delta) {
+              assistantMsg.content += obj.delta;
+              renderChatLog();
+            }
+          } catch (_) {
+            /* 忽略半截 JSON */
+          }
+        }
+      }
+
+      if (streamError) {
+        assistantMsg.content = assistantMsg.content || `（${streamError}）`;
+        renderChatLog();
+      } else if (!assistantMsg.content) {
+        assistantMsg.content = "（AI 沒有回覆內容）";
+        renderChatLog();
+      }
+    } catch (err) {
+      console.error(err);
+      assistantMsg.content = `（對話失敗：${err.message || err}）`;
+      renderChatLog();
+    } finally {
+      state.chatStreaming = false;
+      dom.chatSend.disabled = false;
+      dom.chatInput.focus();
+    }
   }
 
   // ─── WebSocket / 錄音 ────────────────────────────────────────────
@@ -734,8 +919,11 @@ registerProcessor('pcm16-writer', PCM16Writer);
       if (!isRange) {
         if (data.summary) state.priorSummary = data.summary;
         if (advanceCursor) {
+          const digestFrom = state.askedThrough;
           state.askedThrough = cursorTarget;
           state.linesSinceAutoAsk = 0; // 產過問就重置,避免手動產完馬上被自動觸發
+          // 順手把本批新發言壓成重點摘要(不 await,不擋產問回應)
+          appendDigest(digestFrom, cursorTarget);
         }
       }
       const added = addQuestions(data.questions, source);
@@ -901,9 +1089,27 @@ registerProcessor('pcm16-writer', PCM16Writer);
     dom.btnClearSel.addEventListener("click", clearSelection);
   }
 
+  // Chat：表單送出 + Enter 送出（Shift+Enter 換行；IME 組字中不送）
+  if (dom.chatForm) {
+    dom.chatForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      sendChat();
+    });
+  }
+  if (dom.chatInput) {
+    dom.chatInput.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" || ev.shiftKey) return;
+      if (ev.isComposing || ev.keyCode === 229) return; // IME 組字中，放行
+      ev.preventDefault();
+      sendChat();
+    });
+  }
+
   // 初始 UI 狀態
   setConn("offline", "待機");
   updateTranscriptStat();
   updateQuestionsStat(0);
+  renderDigests();
+  renderChatLog();
   refreshAskButton();
 })();

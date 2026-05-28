@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -215,6 +216,102 @@ async def _summarize_async(older: str) -> str:
         max_tokens=800,
     )
     return content.strip()
+
+
+async def summarize(transcript: str) -> str:
+    """對外：把一段逐字稿壓成條列重點（供 /api/digest）。"""
+    return await _summarize_async((transcript or "").strip())
+
+
+# ── Chat（streaming）─────────────────────────────────────────────────────────
+
+CHAT_SYSTEM_PROMPT = """你是會議現場的 AI 助理，協助使用者（乙方）即時應對會議。
+你能做兩件事：
+1. 回答使用者對「目前逐字稿內容」的提問（對方說了什麼、釐清某段在講什麼）。
+2. 跟使用者討論「接下來該怎麼問」，幫他想追問方向、措辭、該釐清的點。
+
+原則：
+- 根據提供的【逐字稿】【會議背景】【已產生的問題】回答，不要編造逐字稿沒有的事實。
+- 回答簡潔、講重點、可直接念出來；該追問的就具體給出問句。
+- 用繁體中文。逐字稿沒提到的就老實說「逐字稿沒提到」，不要硬掰。"""
+
+
+CHAT_CONTEXT_TEMPLATE = """以下是目前的會議脈絡，供你回答時參考。
+
+【會議背景】
+{context}
+
+【目前逐字稿】
+{transcript}
+
+【已產生的追問問題】
+{asked}
+"""
+
+
+def build_chat_messages(
+    messages: list[dict[str, str]],
+    *,
+    transcript: str | None = None,
+    context_hint: str | None = None,
+    asked_questions: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """把脈絡（逐字稿／背景／已產問）+ 對話歷史組成 chat messages。
+
+    脈絡塞成一則 system 之後的 user 開場，再接前端帶來的對話歷史。
+    """
+    asked_clean = [q.strip() for q in (asked_questions or []) if q and q.strip()]
+    context_block = CHAT_CONTEXT_TEMPLATE.format(
+        context=(context_hint or "").strip() or "（未提供）",
+        transcript=(transcript or "").strip() or "（目前還沒有逐字稿）",
+        asked="\n".join(f"- {q}" for q in asked_clean) if asked_clean else "（尚未產生）",
+    )
+    out: list[dict[str, str]] = [
+        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+        {"role": "system", "content": context_block},
+    ]
+    for m in messages:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            out.append({"role": role, "content": content})
+    return out
+
+
+async def stream_chat(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    """OpenAI-compatible streaming chat completion；逐段 yield content delta 文字。
+
+    上層（routes）負責把 delta 包成 SSE。本函式只處理「打 LLM、解 stream、吐文字」。
+    """
+    headers = {"Content-Type": "application/json"}
+    if LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+
+    payload = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "temperature": LLM_TEMPERATURE,
+        "max_tokens": LLM_MAX_TOKENS,
+        "stream": True,
+    }
+    url = f"{LLM_BASE_URL.rstrip('/')}/chat/completions"
+
+    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content")
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                    continue
+                if delta:
+                    yield delta
 
 
 # ── JSON 容錯解析 ─────────────────────────────────────────────────────────────

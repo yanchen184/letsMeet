@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -16,7 +17,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.audio_processor import AudioProcessor
@@ -34,7 +35,10 @@ from app.config import (
 )
 from app.llm_client import (
     LLMOutputFormatError,
+    build_chat_messages,
     generate_questions,
+    stream_chat,
+    summarize,
 )
 from app.whisper_client import transcribe as whisper_cpp_transcribe
 
@@ -186,6 +190,90 @@ async def questions(req: QuestionsRequest) -> JSONResponse:
             "truncated": result["truncated"],
         },
         headers={"X-Request-Id": request_id},
+    )
+
+
+class DigestRequest(BaseModel):
+    transcript: str = Field(..., description="要壓成條列重點的一段逐字稿")
+
+
+@router.post("/digest", response_model=None)
+async def digest(req: DigestRequest) -> JSONResponse:
+    """把一段逐字稿壓成條列重點摘要（產問時前端順手呼叫，原文折疊只看摘要）。"""
+    request_id = uuid.uuid4().hex
+    if not (req.transcript or "").strip():
+        return JSONResponse(
+            {"error": "transcript 不可為空"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    try:
+        summary = await summarize(req.transcript)
+    except httpx.TimeoutException:
+        logger.exception("digest LLM timeout [%s]", request_id)
+        return JSONResponse(
+            {"error": "摘要回應超時，請稍後再試"},
+            status_code=504,
+            headers={"X-Request-Id": request_id},
+        )
+    except httpx.HTTPError as exc:
+        logger.exception("digest LLM HTTP error [%s]: %s", request_id, exc)
+        return JSONResponse(
+            {"error": "摘要服務暫時不可用"},
+            status_code=502,
+            headers={"X-Request-Id": request_id},
+        )
+    return JSONResponse({"summary": summary}, headers={"X-Request-Id": request_id})
+
+
+class ChatRequest(BaseModel):
+    messages: list[dict[str, str]] = Field(..., description="對話歷史 [{role, content}]，最後一則為使用者本次發問")
+    transcript: str | None = Field(default=None, description="目前累積逐字稿全文，當回答脈絡")
+    context: str | None = Field(default=None, description="會議背景／角色提示")
+    asked_questions: list[str] | None = Field(default=None, description="已產生的追問問題清單")
+
+
+@router.post("/chat", response_model=None)
+async def chat(req: ChatRequest) -> StreamingResponse | JSONResponse:
+    """與 AI 即時對談（SSE streaming）。逐 token 以 `data:` 推回前端。
+
+    SSE 串流不便用 HTTP 狀態碼回錯誤；連線後的錯誤改以 `data: {"error": ...}` 推出。
+    """
+    request_id = uuid.uuid4().hex
+    if not req.messages or not any((m.get("content") or "").strip() for m in req.messages):
+        return JSONResponse(
+            {"error": "messages 不可為空"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+
+    chat_messages = build_chat_messages(
+        req.messages,
+        transcript=req.transcript,
+        context_hint=req.context,
+        asked_questions=req.asked_questions,
+    )
+
+    async def _event_stream() -> Any:
+        try:
+            async for delta in stream_chat(chat_messages):
+                yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        except httpx.TimeoutException:
+            logger.exception("chat LLM timeout [%s]", request_id)
+            yield f"data: {json.dumps({'error': 'AI 回應超時'}, ensure_ascii=False)}\n\n"
+        except httpx.HTTPError as exc:
+            logger.exception("chat LLM HTTP error [%s]: %s", request_id, exc)
+            yield f"data: {json.dumps({'error': 'AI 服務暫時不可用'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "X-Request-Id": request_id,
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

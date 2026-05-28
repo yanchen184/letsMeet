@@ -62,11 +62,42 @@
                 title="取消選取">取消選取</button>
         <span id="transcriptStat" class="stat">—</span>
       </div>
-      <div id="transcript" class="transcript" aria-live="polite">
+
+      <!-- 重點摘要：產問時順手把該批新發言壓成條列，預設可見 -->
+      <div id="digestArea" class="digest-area" hidden>
+        <div class="digest-head">
+          <span class="digest-title">重點摘要</span>
+          <span class="digest-hint">產問時自動整理</span>
+        </div>
+        <div id="digestList" class="digest-list"></div>
+      </div>
+
+      <!-- 完整逐字稿：預設折疊，需要選區/核對時展開 -->
+      <details id="transcriptDetails" class="transcript-details">
+        <summary class="transcript-summary">展開完整逐字稿</summary>
+        <div id="transcript" class="transcript" aria-live="polite">
+          <p class="placeholder">
+            按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。
+          </p>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel chat-panel" aria-labelledby="h-chat">
+      <div class="panel-head">
+        <h2 id="h-chat">問 AI / 討論提問方向</h2>
+        <span id="chatStat" class="stat">—</span>
+      </div>
+      <div id="chatLog" class="chat-log" aria-live="polite">
         <p class="placeholder">
-          按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。
+          隨時問 AI 剛剛逐字稿講了什麼，或一起討論接下來該怎麼問。
         </p>
       </div>
+      <form id="chatForm" class="chat-form">
+        <textarea id="chatInput" class="chat-input" rows="2"
+          placeholder="例如：剛剛對方對交期是怎麼說的？／幫我想三個該追問的點。Enter 送出，Shift+Enter 換行。"></textarea>
+        <button id="chatSend" class="btn primary" type="submit">送出</button>
+      </form>
     </section>
 
     <section class="panel" aria-labelledby="h-questions">

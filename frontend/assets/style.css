@@ -609,6 +609,135 @@ body.is-recording .btn.primary::before {
   outline-offset: 2px;
 }
 
+/* ── 重點摘要 ──────────────────────────────────────── */
+.digest-area {
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafafa;
+  padding: 10px 12px;
+}
+
+.digest-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.digest-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.digest-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.digest-block + .digest-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.digest-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.digest-text {
+  font-size: 13px;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.digest-text.digest-failed {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* 完整逐字稿折疊 */
+.transcript-details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+}
+
+.transcript-summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 0;
+  user-select: none;
+}
+
+.transcript-summary:hover { color: var(--fg); }
+
+.transcript-details[open] .transcript-summary {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+
+/* ── Chat ─────────────────────────────────────────── */
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.chat-msg {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-user {
+  align-self: flex-end;
+  background: var(--focus);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-assistant {
+  align-self: flex-start;
+  background: #f4f4f5;
+  color: var(--fg);
+  border-bottom-left-radius: 4px;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.chat-input {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  resize: vertical;
+  min-height: 44px;
+}
+
+.chat-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--focus);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;
