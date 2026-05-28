@@ -28,6 +28,8 @@
       <button id="btnClear" class="btn danger-ghost" type="button"
               title="清空逐字稿與問題,需要點兩次確認">清空</button>
       <button id="btnDownload" class="btn ghost" type="button">匯出 .md</button>
+      <button id="btnSaveMeeting" class="btn" type="button" disabled>存成會議記錄</button>
+      <button id="btnHistory" class="btn ghost" type="button">歷史會議</button>
     </section>
 
     <section class="panel context-panel" aria-labelledby="h-context">
@@ -109,6 +111,35 @@
         <p class="placeholder">按「產生問題」由 AI 從逐字稿產出 3–5 個追問。</p>
       </div>
     </section>
+
+    <!-- 存檔表單（inline，初始隱藏） -->
+    <div id="saveMeetingForm" class="save-meeting-form" hidden>
+      <div class="save-meeting-form__row">
+        <label class="save-meeting-form__label" for="saveMeetingTitle">標題</label>
+        <input id="saveMeetingTitle" class="save-meeting-form__input" type="text" placeholder="這場會議的標題" />
+      </div>
+      <div class="save-meeting-form__row">
+        <label class="save-meeting-form__label" for="saveMeetingOwner">填寫者</label>
+        <input id="saveMeetingOwner" class="save-meeting-form__input" type="text" placeholder="你的名字" />
+      </div>
+      <div class="save-meeting-form__actions">
+        <button id="btnSaveMeetingConfirm" class="btn primary" type="button">確認儲存</button>
+        <button id="btnSaveMeetingCancel" class="btn ghost" type="button">取消</button>
+        <span id="saveMeetingMsg" class="save-meeting-form__msg" hidden></span>
+      </div>
+    </div>
+
+    <!-- 歷史會議 Modal -->
+    <div id="historyModal" class="history-modal" hidden>
+      <div class="history-modal__panel">
+        <button class="history-modal__close" type="button" aria-label="關閉">×</button>
+        <div class="history-modal__listView">
+          <input class="history-filter" type="text" placeholder="標題過濾" />
+          <ul class="history-list"></ul>
+        </div>
+        <div class="history-modal__detailView" hidden></div>
+      </div>
+    </div>
   </main>
 
   <script src="assets/app.js"></script>

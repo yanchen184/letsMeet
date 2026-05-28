@@ -738,6 +738,289 @@ body.is-recording .btn.primary::before {
   border-color: var(--focus);
 }
 
+/* ── 存成會議記錄：inline 表單 ───────────────────────────── */
+.save-meeting-form {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px clamp(12px, 2.5vw, 16px);
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.save-meeting-form__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.save-meeting-form__label {
+  font-size: 13px;
+  color: var(--muted);
+  flex: 0 0 60px;
+  text-align: right;
+}
+
+.save-meeting-form__input {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  min-height: 36px;
+}
+
+.save-meeting-form__input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--focus);
+}
+
+.save-meeting-form__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.save-meeting-form__msg {
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.save-meeting-form__msg--ok {
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+}
+
+.save-meeting-form__msg--error {
+  color: #991b1b;
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+}
+
+/* ── 歷史會議 Modal ────────────────────────────────────── */
+.history-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(16px, 4vw, 40px);
+}
+
+.history-modal__panel {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 620px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.history-modal__close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: none;
+  border: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  z-index: 1;
+}
+
+.history-modal__close:hover { color: var(--fg); }
+
+.history-modal__close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.history-modal__listView,
+.history-modal__detailView {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+
+.history-filter {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 40px 12px clamp(12px, 2.5vw, 16px);
+  outline: none;
+  background: #fafafa;
+  flex: 0 0 auto;
+}
+
+.history-filter:focus {
+  background: #fff;
+  border-color: var(--focus);
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  scrollbar-width: thin;
+  scrollbar-color: #d4d4d8 transparent;
+}
+
+.history-list__item {
+  padding: 12px clamp(12px, 2.5vw, 16px);
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.history-list__item:hover { background: #f4f4f5; }
+.history-list__item:last-child { border-bottom: none; }
+
+.history-list__item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.history-list__title {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+
+.history-list__meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.history-list__loading,
+.history-list__empty,
+.history-list__error {
+  padding: 20px clamp(12px, 2.5vw, 16px);
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-list__retry {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+/* 詳情視圖 */
+.history-modal__detailView {
+  padding: clamp(12px, 2.5vw, 16px);
+  overflow-y: auto;
+  gap: 12px;
+}
+
+.history-detail__back {
+  align-self: flex-start;
+  font-size: 13px;
+  padding: 5px 12px;
+  margin-bottom: 8px;
+}
+
+.history-detail__title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+}
+
+.history-detail__meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 14px 0;
+}
+
+.history-detail__section-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 14px 0 6px 0;
+}
+
+.history-detail__summary {
+  white-space: pre-wrap;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+  background: #fafafa;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.history-detail__transcript-details {
+  margin-top: 4px;
+}
+
+.history-detail__transcript {
+  white-space: pre-wrap;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 8px 0 0 0;
+  padding: 8px 12px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.history-detail__questions {
+  padding-left: 20px;
+  margin: 0;
+}
+
+.history-detail__q-item {
+  margin-bottom: 10px;
+}
+
+.history-detail__q-item:last-child { margin-bottom: 0; }
+
+.history-detail__q-text {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 3px 0;
+}
+
+.history-detail__q-why {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.history-detail__loading,
+.history-detail__error {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 12px 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;
@@ -795,6 +1078,9 @@ body.is-recording .btn.primary::before {
     grid-column: 1;
   }
   #btnDownload { grid-column: 2; }
+  /* 第四排:存成會議記錄跨 2 欄 */
+  #btnSaveMeeting { grid-column: 1 / -1; }
+  #btnHistory { grid-column: 1 / -1; }
 
   .panel-head .stat { font-size: 11px; }
   .transcript { max-height: 40vh; }

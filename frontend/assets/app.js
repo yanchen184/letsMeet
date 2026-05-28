@@ -54,6 +54,8 @@
     chatInput: $("chatInput"),
     chatSend: $("chatSend"),
     chatStat: $("chatStat"),
+    btnSaveMeeting: $("btnSaveMeeting"),
+    btnHistory: $("btnHistory"),
   };
 
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -340,6 +342,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
     dom.btnAsk.title = enoughLines
       ? "由 AI 從目前逐字稿產出 3–5 個追問"
       : `逐字稿至少要 ${MIN_LINES_TO_ASK} 行才能產出有意義的問題`;
+    refreshSaveMeetingButton();
   }
 
   function resetClearConfirm() {
@@ -483,6 +486,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.questions.appendChild(card);
     });
     updateQuestionsStat(state.questionItems.length);
+    refreshSaveMeetingButton();
   }
 
   // ─── 重點摘要 ────────────────────────────────────────────────────
@@ -1012,12 +1016,375 @@ registerProcessor('pcm16-writer', PCM16Writer);
   }
 
 
+  // ─── 存成會議記錄（Task 8）─────────────────────────────────────
+  const LS_OWNER_KEY = "letsmeet_owner";
+
+  function refreshSaveMeetingButton() {
+    if (!dom.btnSaveMeeting) return;
+    const hasContent = state.transcriptLines.length > 0 || state.questionItems.length > 0;
+    dom.btnSaveMeeting.disabled = !hasContent;
+  }
+
+  function showSaveForm() {
+    const formEl = $("saveMeetingForm");
+    if (!formEl) return;
+    // 預填 owner from localStorage
+    const ownerInput = $("saveMeetingOwner");
+    if (ownerInput && !ownerInput.value) {
+      ownerInput.value = localStorage.getItem(LS_OWNER_KEY) || "";
+    }
+    // 清除舊訊息
+    const msgEl = $("saveMeetingMsg");
+    if (msgEl) { msgEl.hidden = true; msgEl.textContent = ""; }
+    formEl.hidden = false;
+    const titleInput = $("saveMeetingTitle");
+    if (titleInput) titleInput.focus();
+  }
+
+  function hideSaveForm() {
+    const formEl = $("saveMeetingForm");
+    if (formEl) formEl.hidden = true;
+  }
+
+  function setSaveMsg(text, isError) {
+    const msgEl = $("saveMeetingMsg");
+    if (!msgEl) return;
+    msgEl.textContent = text;
+    msgEl.className = "save-meeting-form__msg" + (isError ? " save-meeting-form__msg--error" : " save-meeting-form__msg--ok");
+    msgEl.hidden = false;
+  }
+
+  async function doSaveMeeting() {
+    const titleInput = $("saveMeetingTitle");
+    const ownerInput = $("saveMeetingOwner");
+    const title = (titleInput?.value || "").trim();
+    const owner = (ownerInput?.value || "").trim();
+
+    if (!title || !owner) {
+      setSaveMsg("標題與填寫者必填", true);
+      return;
+    }
+
+    const confirmBtn = $("btnSaveMeetingConfirm");
+    if (confirmBtn) confirmBtn.disabled = true;
+
+    try {
+      const questions = state.questionItems.map((it) => ({ q: it.q, why: it.why }));
+      const summary = state.digests.map((d) => d.summary).filter(Boolean).join("\n");
+      const resp = await fetch(`${API_BASE}/api/meetings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          owner,
+          context: buildContext(),
+          summary: summary || null,
+          transcript: getFullTranscript() || null,
+          questions: questions.length ? questions : null,
+        }),
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        setSaveMsg(errData.error || `儲存失敗 (HTTP ${resp.status})`, true);
+        return;
+      }
+      // success
+      localStorage.setItem(LS_OWNER_KEY, owner);
+      setSaveMsg("已存檔 ✓", false);
+      // 短暫停留後自動關閉表單
+      setTimeout(hideSaveForm, 1500);
+    } catch (err) {
+      setSaveMsg(`儲存失敗:${err.message || err}`, true);
+    } finally {
+      if (confirmBtn) confirmBtn.disabled = false;
+    }
+  }
+
+  // ─── 歷史會議 Modal（Task 9）─────────────────────────────────────
+  let _historyAllMeetings = []; // 最近抓到的列表(未過濾)
+
+  function openHistoryModal() {
+    const modal = $("historyModal");
+    if (!modal) return;
+    modal.hidden = false;
+    // 每次開啟重置到列表視圖
+    showHistoryListView();
+    loadHistoryList();
+  }
+
+  function closeHistoryModal() {
+    const modal = $("historyModal");
+    if (modal) modal.hidden = true;
+  }
+
+  function showHistoryListView() {
+    const modal = $("historyModal");
+    if (!modal) return;
+    const listView = modal.querySelector(".history-modal__listView");
+    const detailView = modal.querySelector(".history-modal__detailView");
+    if (listView) listView.hidden = false;
+    if (detailView) detailView.hidden = true;
+    // 清掉 detail 內容
+    if (detailView) detailView.innerHTML = "";
+  }
+
+  async function loadHistoryList() {
+    const modal = $("historyModal");
+    if (!modal) return;
+    const listEl = modal.querySelector(".history-list");
+    if (!listEl) return;
+
+    // 清空 + 顯示 loading
+    listEl.innerHTML = "";
+    const loadingLi = document.createElement("li");
+    loadingLi.className = "history-list__loading";
+    loadingLi.textContent = "載入中…";
+    listEl.appendChild(loadingLi);
+
+    try {
+      const owner = localStorage.getItem(LS_OWNER_KEY) || "";
+      const qs = owner ? `?owner=${encodeURIComponent(owner)}` : "";
+      const resp = await fetch(`${API_BASE}/api/meetings${qs}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      _historyAllMeetings = data.meetings || [];
+      renderHistoryList(_historyAllMeetings, modal);
+    } catch (err) {
+      listEl.innerHTML = "";
+      const errLi = document.createElement("li");
+      errLi.className = "history-list__error";
+      const errText = document.createElement("span");
+      errText.textContent = `載入失敗:${err.message || err}`;
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "btn ghost history-list__retry";
+      retryBtn.type = "button";
+      retryBtn.textContent = "重試";
+      retryBtn.addEventListener("click", loadHistoryList);
+      errLi.appendChild(errText);
+      errLi.appendChild(retryBtn);
+      listEl.appendChild(errLi);
+    }
+  }
+
+  function renderHistoryList(meetings, modal) {
+    if (!modal) modal = $("historyModal");
+    if (!modal) return;
+    const listEl = modal.querySelector(".history-list");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    if (meetings.length === 0) {
+      const emptyLi = document.createElement("li");
+      emptyLi.className = "history-list__empty";
+      emptyLi.textContent = "沒有符合的記錄";
+      listEl.appendChild(emptyLi);
+      return;
+    }
+    meetings.forEach((m) => {
+      const li = document.createElement("li");
+      li.className = "history-list__item";
+      li.setAttribute("role", "button");
+      li.setAttribute("tabindex", "0");
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "history-list__title";
+      titleEl.textContent = m.title;
+
+      const metaEl = document.createElement("div");
+      metaEl.className = "history-list__meta";
+      const dateStr = m.created_at
+        ? new Date(m.created_at).toLocaleString("zh-Hant-TW", { dateStyle: "short", timeStyle: "short" })
+        : "";
+      metaEl.textContent = [m.owner, dateStr].filter(Boolean).join(" · ");
+
+      li.appendChild(titleEl);
+      li.appendChild(metaEl);
+
+      const openDetail = () => loadHistoryDetail(m.id, modal);
+      li.addEventListener("click", openDetail);
+      li.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openDetail(); }
+      });
+
+      listEl.appendChild(li);
+    });
+  }
+
+  async function loadHistoryDetail(id, modal) {
+    if (!modal) modal = $("historyModal");
+    if (!modal) return;
+    const listView = modal.querySelector(".history-modal__listView");
+    const detailView = modal.querySelector(".history-modal__detailView");
+    if (!detailView) return;
+
+    // 切換視圖
+    if (listView) listView.hidden = true;
+    detailView.hidden = false;
+    detailView.innerHTML = "";
+
+    // loading 狀態
+    const loadingP = document.createElement("p");
+    loadingP.className = "history-detail__loading";
+    loadingP.textContent = "載入中…";
+    detailView.appendChild(loadingP);
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/meetings/${encodeURIComponent(id)}`);
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${resp.status}`);
+      }
+      const mtg = await resp.json();
+      renderHistoryDetail(mtg, detailView, modal);
+    } catch (err) {
+      detailView.innerHTML = "";
+      const errP = document.createElement("p");
+      errP.className = "history-detail__error";
+      errP.textContent = `載入失敗:${err.message || err}`;
+      detailView.appendChild(errP);
+
+      const backBtn = document.createElement("button");
+      backBtn.className = "btn ghost history-detail__back";
+      backBtn.type = "button";
+      backBtn.textContent = "← 返回列表";
+      backBtn.addEventListener("click", () => showHistoryListView());
+      detailView.insertBefore(backBtn, errP);
+    }
+  }
+
+  function renderHistoryDetail(mtg, detailView, modal) {
+    detailView.innerHTML = "";
+
+    // 返回按鈕
+    const backBtn = document.createElement("button");
+    backBtn.className = "btn ghost history-detail__back";
+    backBtn.type = "button";
+    backBtn.textContent = "← 返回列表";
+    backBtn.addEventListener("click", () => showHistoryListView());
+    detailView.appendChild(backBtn);
+
+    // 標題
+    const titleEl = document.createElement("h2");
+    titleEl.className = "history-detail__title";
+    titleEl.textContent = mtg.title;
+    detailView.appendChild(titleEl);
+
+    // Meta
+    const metaEl = document.createElement("p");
+    metaEl.className = "history-detail__meta";
+    const dateStr = mtg.created_at
+      ? new Date(mtg.created_at).toLocaleString("zh-Hant-TW", { dateStyle: "medium", timeStyle: "short" })
+      : "";
+    metaEl.textContent = [mtg.owner, dateStr].filter(Boolean).join(" · ");
+    detailView.appendChild(metaEl);
+
+    // 重點摘要
+    if (mtg.summary) {
+      const summaryLabel = document.createElement("h3");
+      summaryLabel.className = "history-detail__section-label";
+      summaryLabel.textContent = "重點摘要";
+      detailView.appendChild(summaryLabel);
+
+      const summaryPre = document.createElement("pre");
+      summaryPre.className = "history-detail__summary";
+      summaryPre.textContent = mtg.summary;
+      detailView.appendChild(summaryPre);
+    }
+
+    // 完整逐字稿（折疊）
+    if (mtg.transcript) {
+      const details = document.createElement("details");
+      details.className = "transcript-details history-detail__transcript-details";
+
+      const summary = document.createElement("summary");
+      summary.className = "transcript-summary";
+      summary.textContent = "完整逐字稿";
+      details.appendChild(summary);
+
+      const transcriptPre = document.createElement("pre");
+      transcriptPre.className = "history-detail__transcript";
+      transcriptPre.textContent = mtg.transcript;
+      details.appendChild(transcriptPre);
+
+      detailView.appendChild(details);
+    }
+
+    // 建議追問
+    const questions = mtg.questions || [];
+    if (questions.length > 0) {
+      const qLabel = document.createElement("h3");
+      qLabel.className = "history-detail__section-label";
+      qLabel.textContent = "建議追問";
+      detailView.appendChild(qLabel);
+
+      const qList = document.createElement("ol");
+      qList.className = "history-detail__questions";
+      questions.forEach((item) => {
+        const li = document.createElement("li");
+        li.className = "history-detail__q-item";
+
+        const qText = document.createElement("p");
+        qText.className = "history-detail__q-text";
+        qText.textContent = item.q || "";
+        li.appendChild(qText);
+
+        if (item.why) {
+          const whyText = document.createElement("p");
+          whyText.className = "history-detail__q-why";
+          whyText.textContent = item.why;
+          li.appendChild(whyText);
+        }
+
+        qList.appendChild(li);
+      });
+      detailView.appendChild(qList);
+    }
+  }
+
   // ─── 綁定 ────────────────────────────────────────────────────────
   dom.btnStart.addEventListener("click", startRecording);
   dom.btnStop.addEventListener("click", () => stopRecording({ keepTranscript: true, exportAudio: true }));
   dom.btnAsk.addEventListener("click", () => askQuestions({ source: "manual" }));
   dom.btnClear.addEventListener("click", handleClearClick);
   dom.btnDownload.addEventListener("click", downloadTranscript);
+
+  // 存成會議記錄
+  if (dom.btnSaveMeeting) {
+    dom.btnSaveMeeting.addEventListener("click", showSaveForm);
+  }
+  const saveMeetingConfirmBtn = $("btnSaveMeetingConfirm");
+  if (saveMeetingConfirmBtn) {
+    saveMeetingConfirmBtn.addEventListener("click", doSaveMeeting);
+  }
+  const saveMeetingCancelBtn = $("btnSaveMeetingCancel");
+  if (saveMeetingCancelBtn) {
+    saveMeetingCancelBtn.addEventListener("click", hideSaveForm);
+  }
+
+  // 歷史會議 Modal
+  if (dom.btnHistory) {
+    dom.btnHistory.addEventListener("click", openHistoryModal);
+  }
+  const historyModalEl = $("historyModal");
+  if (historyModalEl) {
+    // 關閉按鈕
+    const closeBtn = historyModalEl.querySelector(".history-modal__close");
+    if (closeBtn) closeBtn.addEventListener("click", closeHistoryModal);
+    // 點 overlay 背景關閉
+    historyModalEl.addEventListener("click", (ev) => {
+      if (ev.target === historyModalEl) closeHistoryModal();
+    });
+    // 過濾輸入
+    const filterInput = historyModalEl.querySelector(".history-filter");
+    if (filterInput) {
+      filterInput.addEventListener("input", () => {
+        const q = filterInput.value.toLowerCase();
+        const filtered = q
+          ? _historyAllMeetings.filter((m) => (m.title || "").toLowerCase().includes(q))
+          : _historyAllMeetings;
+        renderHistoryList(filtered, historyModalEl);
+      });
+    }
+  }
 
   // 自動產問開關
   if (dom.chkAutoAsk) {
@@ -1112,4 +1479,5 @@ registerProcessor('pcm16-writer', PCM16Writer);
   renderDigests();
   renderChatLog();
   refreshAskButton();
+  refreshSaveMeetingButton();
 })();
