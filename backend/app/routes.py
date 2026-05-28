@@ -28,6 +28,7 @@ from app.config import (
     BACKEND_VAD_THRESHOLD,
     ASR_BACKEND,
     COMPUTE_TYPE,
+    DB_PATH,
     DEFAULT_LANGUAGE,
     DEVICE,
     STREAM_MODEL,
@@ -41,6 +42,7 @@ from app.llm_client import (
     summarize,
 )
 from app.whisper_client import transcribe as whisper_cpp_transcribe
+from app import db
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +226,60 @@ async def digest(req: DigestRequest) -> JSONResponse:
             headers={"X-Request-Id": request_id},
         )
     return JSONResponse({"summary": summary}, headers={"X-Request-Id": request_id})
+
+
+class MeetingSaveRequest(BaseModel):
+    title: str = Field(..., description="會議標題")
+    owner: str = Field(..., description="填寫者 / 歸誰（無密碼）")
+    context: str | None = Field(default=None, description="當時會議背景")
+    summary: str | None = Field(default=None, description="重點摘要")
+    transcript: str | None = Field(default=None, description="完整原始逐字稿")
+    questions: list[dict] | None = Field(default=None, description="產出追問")
+
+
+@router.post("/meetings", response_model=None)
+async def save_meeting_endpoint(req: MeetingSaveRequest) -> JSONResponse:
+    """存一場會議記錄（摘要＋逐字稿＋追問）。"""
+    request_id = uuid.uuid4().hex
+    if not (req.title or "").strip() or not (req.owner or "").strip():
+        return JSONResponse(
+            {"error": "title 與 owner 不可為空"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    mid = db.save_meeting(
+        DB_PATH,
+        title=req.title.strip(),
+        owner=req.owner.strip(),
+        context=req.context,
+        summary=req.summary,
+        transcript=req.transcript,
+        questions=req.questions,
+    )
+    logger.info("meeting saved [%s] id=%d owner=%s", request_id, mid, req.owner)
+    return JSONResponse({"id": mid}, headers={"X-Request-Id": request_id})
+
+
+@router.get("/meetings", response_model=None)
+async def list_meetings_endpoint(owner: str | None = None) -> JSONResponse:
+    """歷史會議列表（輕量欄位），owner 可選。"""
+    request_id = uuid.uuid4().hex
+    rows = db.list_meetings(DB_PATH, owner=owner)
+    return JSONResponse({"meetings": rows}, headers={"X-Request-Id": request_id})
+
+
+@router.get("/meetings/{meeting_id}", response_model=None)
+async def get_meeting_endpoint(meeting_id: int) -> JSONResponse:
+    """單場會議完整內容。"""
+    request_id = uuid.uuid4().hex
+    meeting = db.get_meeting(DB_PATH, meeting_id)
+    if meeting is None:
+        return JSONResponse(
+            {"error": "找不到該場會議"},
+            status_code=404,
+            headers={"X-Request-Id": request_id},
+        )
+    return JSONResponse(meeting, headers={"X-Request-Id": request_id})
 
 
 class ChatRequest(BaseModel):
