@@ -12,6 +12,8 @@
 
 - **即時逐字稿**:WebSocket 串流 PCM16 音訊,faster-whisper 在 server 端轉錄並即時推回前端
 - **AI 追問**:把累積逐字稿丟給任何 OpenAI-compatible LLM(預設接內網自架 Breeze2,可換 OpenAI/Ollama/LM Studio)
+- **即時 Chat**:邊開會邊跟 AI 來回對談 — 問「對方剛剛對交期怎麼說」、討論「接下來該追問什麼」,回覆 SSE streaming 逐字浮現,對話只存前端記憶體
+- **重點摘要折疊**:每次產問順手把該批新發言壓成條列重點,主畫面只看摘要、原文預設折疊,需要核對時再展開
 - **產問去重**:把畫面上已有的問題一併餵給 LLM,叫它別重複或產出意思相近的題目,寧可少問也不灌水
 - **增量聚焦**:游標只把「上次產問後的新發言」送 LLM,舊內容轉成背景摘要,問題緊扣對話最新部分
 - **雙欄脈絡**:「我的角色與重點」+「會議資訊」兩欄,引導 AI 站在你的視角提問
@@ -35,7 +37,7 @@ flowchart LR
 | 元件 | 技術 | 角色 |
 |---|---|---|
 | `frontend/` | nginx + vanilla JS + AudioWorklet | 收音、顯示逐字稿、產問題 UI |
-| `backend/` | FastAPI + faster-whisper | WS 轉錄 / `/api/questions` LLM 橋接 |
+| `backend/` | FastAPI + faster-whisper | WS 轉錄 / `/api/questions`、`/api/digest`、`/api/chat`(SSE)LLM 橋接 |
 | `caddy/` | Caddy v2 | HTTPS 反代(secure context 麥克風才開) |
 
 ---
@@ -124,6 +126,47 @@ Server 回:
 
 每個 response 都帶 `X-Request-Id` header 方便 trace。
 
+### `POST /api/digest`
+
+把一批逐字稿壓成條列重點(產問時前端自動呼叫,只整理「本批新發言」)。
+
+```json
+{ "transcript": "要整理成重點的逐字稿" }
+```
+
+回應:
+
+```json
+{ "summary": "- 甲方要求交期提前到月底\n- 驗收標準尚未敲定" }
+```
+
+錯誤碼:`422`(transcript 為空)/ `502`(LLM HTTP 錯誤)/ `504`(LLM 超時)。
+
+### `POST /api/chat`
+
+跟 AI 即時對談。**SSE streaming** 回覆,逐 token 吐。對話歷史由前端帶(存記憶體),逐字稿 / 會議背景 / 已產問當脈絡注入。
+
+```json
+{
+  "messages": [{"role": "user", "content": "對方對交期是怎麼說的?"}],
+  "transcript": "(可選) 逐字稿脈絡",
+  "context": "(可選) 你的角色與重點＋會議資訊",
+  "asked_questions": ["(可選) 已產出的問題清單"]
+}
+```
+
+回應為 `text/event-stream`,逐片:
+
+```
+data: {"delta": "對方"}
+
+data: {"delta": "說月底"}
+
+data: [DONE]
+```
+
+`422`:messages 為空或內容全空白。連線建立後的上游錯誤(超時 / HTTP)走 `data: {"error":"..."}` 事件而非 HTTP code。
+
 ### `GET /api/health`
 
 ```json
@@ -178,7 +221,7 @@ python -m http.server 8082
 cd backend && pytest --cov=app --cov-report=term-missing -q
 ```
 
-目前 68 passed、~85% 覆蓋率。需要真 ASR 模型 / 真 WS 串流的路徑標 `# pragma: no cover`,屬 integration smoke。
+目前 82 passed、~89% 覆蓋率。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
 
 ---
 
