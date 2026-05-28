@@ -18,6 +18,9 @@ services:
       - LLM_MODEL=${LLM_MODEL:-MediaTek-Research/Llama-Breeze2-8B-Instruct}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1024}
+      - LETSMEET_DB_PATH=/data/letsmeet.db
+    volumes:
+      - letsmeet_data:/data
     restart: unless-stopped
 
   frontend:
@@ -47,3 +50,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  letsmeet_data:
