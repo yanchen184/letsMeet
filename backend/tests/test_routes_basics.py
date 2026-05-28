@@ -168,7 +168,8 @@ class TestMainAppStarts:
         from app.main import app, lifespan  # noqa: F401
 
         called = MagicMock()
-        with patch("app.main._get_stream_model", called):
+        init_db_mock = MagicMock()
+        with patch("app.main._get_stream_model", called), patch("app.main.init_db", init_db_mock):
 
             async def _run() -> None:
                 async with lifespan(app):
@@ -177,3 +178,4 @@ class TestMainAppStarts:
             asyncio.run(_run())
 
         called.assert_called_once()
+        init_db_mock.assert_called_once()
