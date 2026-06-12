@@ -71,3 +71,42 @@ def test_questions_default_empty_list(db_path: str) -> None:
                           summary=None, transcript=None, questions=None)
     got = db.get_meeting(db_path, mid)
     assert got["questions"] == []
+
+
+def test_pin_stored_and_listed_as_protected(db_path: str) -> None:
+    mid = db.save_meeting(db_path, title="機密會", owner="YC", context=None,
+                          summary="s", transcript="t", questions=None,
+                          pin_code="1234")
+    # get 撈得到明碼 pin（供 route 比對）
+    assert db.get_meeting(db_path, mid)["pin_code"] == "1234"
+    # list 只回 is_protected 旗標，不外洩 pin
+    rows = db.list_meetings(db_path)
+    assert rows[0]["is_protected"] is True
+    assert "pin_code" not in rows[0]
+
+
+def test_no_pin_is_not_protected(db_path: str) -> None:
+    mid = db.save_meeting(db_path, title="公開會", owner="YC", context=None,
+                          summary=None, transcript=None, questions=None)
+    assert db.get_meeting(db_path, mid)["pin_code"] is None
+    assert db.list_meetings(db_path)[0]["is_protected"] is False
+
+
+def test_init_db_adds_pin_column_to_legacy_table(tmp_path) -> None:
+    """舊 DB（無 pin_code 欄）再次 init_db 應冪等補欄，不報錯。"""
+    import sqlite3
+
+    p = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "CREATE TABLE meetings (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "title TEXT NOT NULL, owner TEXT NOT NULL, context TEXT, created_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db(p)  # 應補上 pin_code 欄
+    mid = db.save_meeting(p, title="升級後", owner="YC", context=None,
+                          summary=None, transcript=None, questions=None,
+                          pin_code="9999")
+    assert db.get_meeting(p, mid)["pin_code"] == "9999"

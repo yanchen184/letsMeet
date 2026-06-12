@@ -94,3 +94,52 @@ def test_get_meeting_not_found_returns_404(client: TestClient) -> None:
     resp = client.get("/api/meetings/99999")
     assert resp.status_code == 404
     assert "error" in resp.json()
+
+
+def test_post_meeting_with_pin_then_list_marks_protected(client: TestClient) -> None:
+    client.post("/api/meetings",
+                json={"title": "機密會", "owner": "YC", "pin_code": "1234"})
+    rows = client.get("/api/meetings").json()["meetings"]
+    assert rows[0]["is_protected"] is True
+    assert "pin_code" not in rows[0]
+
+
+def test_post_meeting_invalid_pin_returns_422(client: TestClient) -> None:
+    resp = client.post("/api/meetings",
+                       json={"title": "會", "owner": "YC", "pin_code": "12"})
+    assert resp.status_code == 422
+    assert "pin" in resp.json()["error"].lower() or "PIN" in resp.json()["error"]
+
+
+def test_get_protected_meeting_requires_correct_pin(client: TestClient) -> None:
+    mid = client.post(
+        "/api/meetings",
+        json={"title": "機密會", "owner": "YC", "summary": "祕密摘要",
+              "transcript": "祕密逐字稿", "pin_code": "4321"},
+    ).json()["id"]
+
+    # 缺 PIN → 401，不洩內容
+    resp = client.get(f"/api/meetings/{mid}")
+    assert resp.status_code == 401
+    assert resp.json().get("pin_required") is True
+    assert "祕密" not in resp.text
+
+    # 錯 PIN → 401
+    resp = client.get(f"/api/meetings/{mid}", params={"pin": "0000"})
+    assert resp.status_code == 401
+
+    # 對 PIN → 200，回內容但不含 pin_code
+    resp = client.get(f"/api/meetings/{mid}", params={"pin": "4321"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summary"] == "祕密摘要"
+    assert body["transcript"] == "祕密逐字稿"
+    assert "pin_code" not in body
+
+
+def test_get_unprotected_meeting_ignores_pin(client: TestClient) -> None:
+    mid = client.post("/api/meetings",
+                      json={"title": "公開會", "owner": "YC", "summary": "s"}).json()["id"]
+    resp = client.get(f"/api/meetings/{mid}")
+    assert resp.status_code == 200
+    assert "pin_code" not in resp.json()

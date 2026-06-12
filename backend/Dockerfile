@@ -16,7 +16,9 @@ COPY data/ data/
 
 RUN mkdir -p /home/appuser/.cache/huggingface \
     && chown -R appuser:appuser /home/appuser/.cache \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app \
+    && mkdir -p /data \
+    && chown appuser:appuser /data
 
 USER appuser
 

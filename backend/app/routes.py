@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -230,11 +231,12 @@ async def digest(req: DigestRequest) -> JSONResponse:
 
 class MeetingSaveRequest(BaseModel):
     title: str = Field(..., description="會議標題")
-    owner: str = Field(..., description="填寫者 / 歸誰（無密碼）")
+    owner: str = Field(..., description="填寫者 / 歸誰")
     context: str | None = Field(default=None, description="當時會議背景")
     summary: str | None = Field(default=None, description="重點摘要")
     transcript: str | None = Field(default=None, description="完整原始逐字稿")
     questions: list[dict] | None = Field(default=None, description="產出追問")
+    pin_code: str | None = Field(default=None, description="選填 4 位數字 PIN，由建立者自設")
 
 
 @router.post("/meetings", response_model=None)
@@ -247,6 +249,13 @@ async def save_meeting_endpoint(req: MeetingSaveRequest) -> JSONResponse:
             status_code=422,
             headers={"X-Request-Id": request_id},
         )
+    pin = (req.pin_code or "").strip() or None
+    if pin is not None and not re.fullmatch(r"\d{4}", pin):
+        return JSONResponse(
+            {"error": "pin_code 須為 4 位數字"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
     mid = db.save_meeting(
         DB_PATH,
         title=req.title.strip(),
@@ -255,6 +264,7 @@ async def save_meeting_endpoint(req: MeetingSaveRequest) -> JSONResponse:
         summary=req.summary,
         transcript=req.transcript,
         questions=req.questions,
+        pin_code=pin,
     )
     logger.info("meeting saved [%s] id=%d owner=%s", request_id, mid, req.owner)
     return JSONResponse({"id": mid}, headers={"X-Request-Id": request_id})
@@ -269,8 +279,8 @@ async def list_meetings_endpoint(owner: str | None = None) -> JSONResponse:
 
 
 @router.get("/meetings/{meeting_id}", response_model=None)
-async def get_meeting_endpoint(meeting_id: int) -> JSONResponse:
-    """單場會議完整內容。"""
+async def get_meeting_endpoint(meeting_id: int, pin: str | None = None) -> JSONResponse:
+    """單場會議完整內容。設了 PIN 的場次需帶 ?pin= 比對，缺/錯回 401。"""
     request_id = uuid.uuid4().hex
     meeting = db.get_meeting(DB_PATH, meeting_id)
     if meeting is None:
@@ -279,6 +289,14 @@ async def get_meeting_endpoint(meeting_id: int) -> JSONResponse:
             status_code=404,
             headers={"X-Request-Id": request_id},
         )
+    stored_pin = meeting.pop("pin_code", None)  # 不論如何都不外洩 pin
+    if stored_pin:
+        if (pin or "").strip() != stored_pin:
+            return JSONResponse(
+                {"error": "PIN 錯誤或未提供", "pin_required": True},
+                status_code=401,
+                headers={"X-Request-Id": request_id},
+            )
     return JSONResponse(meeting, headers={"X-Request-Id": request_id})
 
 
