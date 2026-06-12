@@ -90,6 +90,9 @@
     digests: [],             // 重點摘要 [{from, to, summary}]，每次產問順手 append
     chatHistory: [],         // chat 對話 [{role, content}]，只存記憶體
     chatStreaming: false,    // chat 串流進行中，避免重複送出
+    fileTimer: null,         // dev 餵檔模式:送幀 setInterval handle,送完/停止時清掉
+    fileCloseWatcher: null,  // dev 餵檔模式:idle watchdog,後端轉完才關 WS
+    fileLastActivity: 0,     // dev 餵檔模式:最後一次收到後端訊息的時間戳
   };
 
   const RECORD_SAMPLE_RATE = 16000; // 與 AudioWorklet targetSampleRate 一致
@@ -801,6 +804,149 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (!keepTranscript) doClearTranscript();
   }
 
+  // ─── DEV:餵錄音檔當即時錄音 ──────────────────────────────────────
+  // 把音檔解碼 → resample 16k mono int16 → 切 30ms 包，照真實節奏丟進
+  // 同一個 WS /api/stream。後端 / Whisper / 產問鏈路完全沿用,逐字稿是
+  // 真的轉出來的。只在 ?devaudio=1 或 Alt+D 顯示入口,不影響正式 UI。
+  async function decodeFileTo16kMonoInt16(file) {
+    const buf = await file.arrayBuffer();
+    const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await tmpCtx.decodeAudioData(buf);
+    tmpCtx.close();
+    // resample 到 16k mono
+    const targetRate = RECORD_SAMPLE_RATE;
+    const durationSec = decoded.duration;
+    const frameCount = Math.ceil(durationSec * targetRate);
+    const offline = new OfflineAudioContext(1, frameCount, targetRate);
+    const src = offline.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offline.destination);
+    src.start(0);
+    const rendered = await offline.startRendering();
+    const f32 = rendered.getChannelData(0);
+    // float [-1,1] → int16
+    const i16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return i16;
+  }
+
+  async function startFilePlayback(file, { realtime = true } = {}) {
+    if (state.isRecording) return;
+    setConn("connecting", "解碼音檔中");
+    dom.btnStart.disabled = true;
+    document.body.classList.add("is-recording");
+
+    let pcm;
+    try {
+      pcm = await decodeFileTo16kMonoInt16(file);
+    } catch (err) {
+      console.error(err);
+      showError(`音檔解碼失敗:${err.message || err}`, { persistent: true });
+      setConn("offline", "待機");
+      document.body.classList.remove("is-recording");
+      dom.btnStart.disabled = false;
+      return;
+    }
+
+    state.ws = new WebSocket(WS_URL);
+    state.ws.binaryType = "arraybuffer";
+    state.ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === "transcription" && data.text) {
+          appendTranscriptLine(data.text);
+          state.fileLastActivity = Date.now(); // 收到逐字稿 → 重置 idle 關閉計時
+        } else if (data.type === "processing") {
+          state.fileLastActivity = Date.now(); // 後端還在轉 → 別關
+        } else if (data.type === "error") {
+          showError(data.message || "後端錯誤");
+        }
+      } catch (_) { /* ignore non-JSON frames */ }
+    };
+    state.ws.onerror = () => {
+      showError("WebSocket 錯誤,請檢查後端服務是否啟動", { persistent: true });
+    };
+    state.ws.onclose = () => {
+      if (state.isRecording) stopFilePlayback({ keepTranscript: true });
+    };
+
+    state.ws.onopen = () => {
+      setConn("recording", "餵檔中");
+      state.isRecording = true;
+      state.audioChunks = [];
+      state.audioSamples = 0;
+      if (state.transcriptLines.length === 0) startElapsed();
+      dom.btnStop.disabled = false;
+      dom.btnStart.textContent = "餵檔中";
+      dom.btnClear.disabled = true;
+      resetClearConfirm();
+
+      const FRAME = Math.round(RECORD_SAMPLE_RATE * 0.03); // 480 sample = 30ms
+      // 背景分頁 setInterval 會被瀏覽器 clamp 到 ~1s,單 tick 送 1 包會慢到沒法用。
+      // 改成「每 tick 送約 1 秒音訊(33 包)、tick 間隔 1s」:被 throttle 也維持近即時,
+      // 沒被 throttle 則直接快速串流(後端會緩衝,不影響轉錄)。realtime=false 再加倍批量。
+      const TICK_MS = 1000;
+      const FRAMES_PER_SEC = Math.round(1 / 0.03); // ≈33
+      const batch = realtime ? FRAMES_PER_SEC : FRAMES_PER_SEC * 4;
+      let offset = 0;
+      const sendFrame = () => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+        for (let b = 0; b < batch && offset < pcm.length; b++) {
+          const end = Math.min(offset + FRAME, pcm.length);
+          const slice = pcm.slice(offset, end);
+          state.audioChunks.push(slice);
+          state.audioSamples += slice.length;
+          state.ws.send(slice.buffer);
+          offset = end;
+        }
+        if (offset >= pcm.length) {
+          clearInterval(state.fileTimer);
+          state.fileTimer = null;
+          // 全部送完後不能馬上關:後端 CPU 轉錄最後一段(可能十幾秒)還沒回來,
+          // 太早關會丟掉結果並觸發 backend "receive after disconnect" error。
+          // 改用 idle watchdog:後端持續 GRACE_MS 沒有任何 processing/transcription
+          // 訊息才關;每次收到訊息都會把 fileLastActivity 往後推。
+          const GRACE_MS = 12000;
+          state.fileLastActivity = Date.now();
+          state.fileCloseWatcher = setInterval(() => {
+            if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+              clearInterval(state.fileCloseWatcher);
+              state.fileCloseWatcher = null;
+              return;
+            }
+            if (Date.now() - state.fileLastActivity >= GRACE_MS) {
+              clearInterval(state.fileCloseWatcher);
+              state.fileCloseWatcher = null;
+              try { state.ws.close(); } catch (_) {}
+            }
+          }, 1000);
+        }
+      };
+      sendFrame(); // 立刻送第一批,不等第一個 tick
+      state.fileTimer = setInterval(sendFrame, TICK_MS);
+    };
+  }
+
+  function stopFilePlayback({ keepTranscript = true } = {}) {
+    state.isRecording = false;
+    if (state.fileTimer) { clearInterval(state.fileTimer); state.fileTimer = null; }
+    if (state.fileCloseWatcher) { clearInterval(state.fileCloseWatcher); state.fileCloseWatcher = null; }
+    try { state.ws?.close(); } catch (_) {}
+    state.ws = null;
+    stopElapsed();
+    setConn("offline", "待機");
+    document.body.classList.remove("is-recording");
+    dom.btnStart.disabled = false;
+    dom.btnStart.textContent = "錄音";
+    dom.btnStop.disabled = true;
+    dom.btnClear.disabled = false;
+    refreshAskButton();
+    if (!keepTranscript) doClearTranscript();
+  }
+
   // ─── 生成問題 ────────────────────────────────────────────────────
   const ASK_LABEL = { manual: "產生問題", auto: "自動產問", range: "問選取區間" };
 
@@ -1432,7 +1578,41 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
   // ─── 綁定 ────────────────────────────────────────────────────────
   dom.btnStart.addEventListener("click", startRecording);
-  dom.btnStop.addEventListener("click", () => stopRecording({ keepTranscript: true, exportAudio: true }));
+  dom.btnStop.addEventListener("click", () => {
+    // 餵檔模式用 fileTimer 區分;一般錄音才匯出 WAV
+    if (state.fileTimer) stopFilePlayback({ keepTranscript: true });
+    else stopRecording({ keepTranscript: true, exportAudio: true });
+  });
+
+  // ─── DEV 餵檔入口:?devaudio=1 或 Alt+D 顯示一顆按鈕 ──────────────
+  (function setupDevAudio() {
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "audio/*";
+    fileInput.style.display = "none";
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (f) startFilePlayback(f, { realtime: true });
+      fileInput.value = "";
+    });
+    document.body.appendChild(fileInput);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "🎵 餵錄音檔";
+    btn.title = "DEV:選一個音檔當即時錄音餵進 Whisper";
+    btn.style.cssText =
+      "position:fixed;left:12px;bottom:48px;z-index:9999;padding:6px 10px;" +
+      "font-size:12px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;" +
+      "color:#334155;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.12)";
+    btn.addEventListener("click", () => fileInput.click());
+
+    const show = () => { if (!btn.isConnected) document.body.appendChild(btn); };
+    if (new URLSearchParams(location.search).has("devaudio")) show();
+    document.addEventListener("keydown", (e) => {
+      if (e.altKey && (e.key === "d" || e.key === "D")) { e.preventDefault(); show(); }
+    });
+  })();
   dom.btnAsk.addEventListener("click", () => askQuestions({ source: "manual" }));
   dom.btnClear.addEventListener("click", handleClearClick);
   dom.btnDownload.addEventListener("click", downloadTranscript);
