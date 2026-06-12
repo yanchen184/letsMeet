@@ -1057,11 +1057,17 @@ registerProcessor('pcm16-writer', PCM16Writer);
   async function doSaveMeeting() {
     const titleInput = $("saveMeetingTitle");
     const ownerInput = $("saveMeetingOwner");
+    const pinInput = $("saveMeetingPin");
     const title = (titleInput?.value || "").trim();
     const owner = (ownerInput?.value || "").trim();
+    const pin = (pinInput?.value || "").trim();
 
     if (!title || !owner) {
       setSaveMsg("標題與填寫者必填", true);
+      return;
+    }
+    if (pin && !/^\d{4}$/.test(pin)) {
+      setSaveMsg("PIN 請輸入 4 位數字", true);
       return;
     }
 
@@ -1081,6 +1087,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
           summary: summary || null,
           transcript: getFullTranscript() || null,
           questions: questions.length ? questions : null,
+          pin_code: pin || null,
         }),
       });
       if (!resp.ok) {
@@ -1201,8 +1208,21 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
       li.appendChild(titleEl);
       li.appendChild(metaEl);
+      const isProtected = !!(m.is_protected || m.pin_protected);
+      if (isProtected) {
+        const lockEl = document.createElement("span");
+        lockEl.className = "history-list__lock";
+        lockEl.textContent = "PIN 保護";
+        li.appendChild(lockEl);
+      }
 
-      const openDetail = () => loadHistoryDetail(m.id, modal);
+      const openDetail = () => {
+        if (isProtected) {
+          promptPinThenLoad(m.id, m.title, modal);
+        } else {
+          loadHistoryDetail(m.id, modal);
+        }
+      };
       li.addEventListener("click", openDetail);
       li.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openDetail(); }
@@ -1212,7 +1232,69 @@ registerProcessor('pcm16-writer', PCM16Writer);
     });
   }
 
-  async function loadHistoryDetail(id, modal) {
+  // 受保護會議：先在 detailView 顯示 PIN 輸入，驗證通過才載入內容。
+  function promptPinThenLoad(id, title, modal, errMsg) {
+    if (!modal) modal = $("historyModal");
+    if (!modal) return;
+    const listView = modal.querySelector(".history-modal__listView");
+    const detailView = modal.querySelector(".history-modal__detailView");
+    if (!detailView) return;
+
+    if (listView) listView.hidden = true;
+    detailView.hidden = false;
+    detailView.innerHTML = "";
+
+    const backBtn = document.createElement("button");
+    backBtn.className = "btn ghost history-detail__back";
+    backBtn.type = "button";
+    backBtn.textContent = "← 返回列表";
+    backBtn.addEventListener("click", () => showHistoryListView());
+    detailView.appendChild(backBtn);
+
+    const form = document.createElement("form");
+    form.className = "history-detail__pin-form";
+
+    const label = document.createElement("label");
+    label.className = "history-detail__pin-label";
+    label.textContent = title ? `「${title}」受 PIN 保護，請輸入 4 位數 PIN` : "請輸入 4 位數 PIN";
+    form.appendChild(label);
+
+    const input = document.createElement("input");
+    input.className = "save-meeting-form__input pin-input";
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.maxLength = 4;
+    input.pattern = "[0-9]{4}";
+    input.placeholder = "••••";
+    form.appendChild(input);
+
+    const submit = document.createElement("button");
+    submit.className = "btn primary";
+    submit.type = "submit";
+    submit.textContent = "解鎖";
+    form.appendChild(submit);
+
+    if (errMsg) {
+      const errP = document.createElement("p");
+      errP.className = "history-detail__error";
+      errP.textContent = errMsg;
+      form.appendChild(errP);
+    }
+
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const pin = (input.value || "").trim();
+      if (!/^\d{4}$/.test(pin)) {
+        return promptPinThenLoad(id, title, modal, "PIN 請輸入 4 位數字");
+      }
+      loadHistoryDetail(id, modal, pin, title);
+    });
+
+    detailView.appendChild(form);
+    input.focus();
+  }
+
+  async function loadHistoryDetail(id, modal, pin, title) {
     if (!modal) modal = $("historyModal");
     if (!modal) return;
     const listView = modal.querySelector(".history-modal__listView");
@@ -1231,9 +1313,14 @@ registerProcessor('pcm16-writer', PCM16Writer);
     detailView.appendChild(loadingP);
 
     try {
-      const resp = await fetch(`${API_BASE}/api/meetings/${encodeURIComponent(id)}`);
+      const qs = pin ? `?pin=${encodeURIComponent(pin)}` : "";
+      const resp = await fetch(`${API_BASE}/api/meetings/${encodeURIComponent(id)}${qs}`);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
+        // PIN 錯誤/未提供 → 回到輸入畫面允許重試
+        if (resp.status === 401 || errData.pin_required) {
+          return promptPinThenLoad(id, title, modal, "PIN 錯誤，請再試一次");
+        }
         throw new Error(errData.error || errData.detail || `HTTP ${resp.status}`);
       }
       const mtg = await resp.json();
