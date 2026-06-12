@@ -4,7 +4,9 @@
 
 開會時按錄音,你方聽到對方說的話會即時轉成逐字稿;按「產生問題」,AI 從你的視角生成 3-5 條你應該追問的問題,避免會議結束才想起來該問什麼。
 
-![letsMeet 錄音中畫面](frontend/letsmeet-recording.png)
+![letsMeet cockpit 主畫面](frontend/letsmeet-cockpit.png)
+
+> 單頁 cockpit:左側錄音控制、中間重點摘要 + 完整逐字稿、右側 AI 建議追問 + 即時 Chat,最右側可滑出歷史會議。受 PIN 保護的會議在清單上以鎖標示,需輸入 4 位數才能展開內容。
 
 ---
 
@@ -15,6 +17,7 @@
 - **即時 Chat**:邊開會邊跟 AI 來回對談 — 問「對方剛剛對交期怎麼說」、討論「接下來該追問什麼」,回覆 SSE streaming 逐字浮現,對話只存前端記憶體
 - **重點摘要折疊**:每次產問順手把該批新發言壓成條列重點,主畫面只看摘要、原文預設折疊,需要核對時再展開
 - **會議記錄持久化**:開完會把標題、重點摘要、完整逐字稿、產出的追問存進 SQLite,之後在「歷史會議」清單翻閱、展開重看(無登入,用填寫者標記歸屬)
+- **PIN 保護**:存會議時可設 4 位數 PIN;清單只回 `is_protected` 旗標不外洩內容,要看詳情得帶對 PIN(缺/錯一律 401),由建立者自行設定(內網 demo,明碼存)
 - **產問去重**:把畫面上已有的問題一併餵給 LLM,叫它別重複或產出意思相近的題目,寧可少問也不灌水
 - **增量聚焦**:游標只把「上次產問後的新發言」送 LLM,舊內容轉成背景摘要,問題緊扣對話最新部分
 - **雙欄脈絡**:「我的角色與重點」+「會議資訊」兩欄,引導 AI 站在你的視角提問
@@ -179,23 +182,27 @@ data: [DONE]
   "context": "(可選) 角色＋會議資訊",
   "summary": "(可選) 重點摘要",
   "transcript": "(可選) 完整原始逐字稿",
-  "questions": [{"q": "驗收標準?", "why": "未說明"}]
+  "questions": [{"q": "驗收標準?", "why": "未說明"}],
+  "pin_code": "(可選) 4 位數字 PIN;設了之後讀詳情需帶對 PIN"
 }
 ```
 
-回應:`{"id": 1}`。`422`:title 或 owner 為空。
+回應:`{"id": 1}`。`422`:title 或 owner 為空,或 `pin_code` 非 4 位數字。
 
 ### `GET /api/meetings`
 
-歷史會議列表(輕量欄位,依時間新到舊)。可選 `?owner=YC` 篩選歸屬。
+歷史會議列表(輕量欄位,依時間新到舊)。可選 `?owner=YC` 篩選歸屬。**不外洩 `pin_code`**,只回 `is_protected` 旗標標示是否上鎖。
 
 ```json
-{ "meetings": [{"id": 1, "title": "與甲方交期會議", "owner": "YC", "created_at": "2026-05-28T..."}] }
+{ "meetings": [{"id": 1, "title": "與甲方交期會議", "owner": "YC", "created_at": "2026-05-28T...", "is_protected": true}] }
 ```
 
 ### `GET /api/meetings/{id}`
 
-單場會議完整內容(摘要＋逐字稿＋追問)。`404`:找不到該場會議。
+單場會議完整內容(摘要＋逐字稿＋追問)。受保護的會議需帶 `?pin=1234`。回應**不含 `pin_code`**。
+
+- `404`:找不到該場會議
+- `401`:會議受保護,但未提供或 PIN 錯誤 → `{"error": "PIN 錯誤或未提供", "pin_required": true}`
 
 ```json
 {
@@ -262,14 +269,6 @@ cd backend && pytest --cov=app --cov-report=term-missing -q
 ```
 
 目前 94 passed、~90% 覆蓋率。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
-
----
-
-## 螢幕截圖
-
-| Desktop | 錄音中 | 有內容 | Mobile |
-|---|---|---|---|
-| ![](frontend/letsmeet-desktop-default.png) | ![](frontend/letsmeet-recording.png) | ![](frontend/letsmeet-with-content.png) | ![](frontend/letsmeet-mobile-375.png) |
 
 ---
 
