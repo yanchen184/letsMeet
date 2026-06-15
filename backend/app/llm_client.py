@@ -223,6 +223,31 @@ async def summarize(transcript: str) -> str:
     return await _summarize_async((transcript or "").strip())
 
 
+# ── 會議標題（供儲存表單自動預填）─────────────────────────────────────────────
+
+TITLE_SYSTEM_PROMPT = """你是會議記錄助理。根據提供的會議逐字稿，下一個精簡、具體的標題。
+原則：
+- 用繁體中文，14 個字以內，不要標點符號結尾。
+- 點出會議主題或核心議題，不要寫「會議逐字稿」「會議記錄」這種空話。
+- 只輸出標題本身一行，不要任何解釋、引號、前綴。"""
+
+
+async def generate_title(transcript: str) -> str:
+    """對外：用逐字稿產一句會議標題（供 /api/title 預填儲存表單）。"""
+    text = (transcript or "").strip()
+    if not text:
+        return ""
+    content = await _chat_completion(
+        TITLE_SYSTEM_PROMPT,
+        text,
+        temperature=0.3,
+        max_tokens=40,
+    )
+    # 防 LLM 回多行 / 引號 / 句尾標點，取第一行去殼
+    title = content.strip().splitlines()[0].strip() if content.strip() else ""
+    return title.strip("「」\"'　 ").rstrip("。.!！?？")
+
+
 # ── Chat（streaming）─────────────────────────────────────────────────────────
 
 CHAT_SYSTEM_PROMPT = """你是會議現場的 AI 助理，協助使用者（乙方）即時應對會議。

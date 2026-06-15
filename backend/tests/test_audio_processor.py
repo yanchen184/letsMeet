@@ -90,6 +90,48 @@ class TestVADStateMachine:
 
 
 @pytest.mark.unit
+class TestMaxBufferTrigger:
+    """累積上限保險絲：連續語音（永不靜音）也會在 buffer 超過上限時切一刀。"""
+
+    def test_continuous_speech_triggers_on_max_buffer(self) -> None:
+        # 每幀 30ms，max_buffer=0.2s → 7 幀即超過上限
+        p = AudioProcessor(silence_timeout_s=99.0, rms_threshold=300.0, max_buffer_s=0.2)
+        for _ in range(6):
+            p.add_frame(_loud_frame())
+        assert p.should_process() is False  # 還沒到上限
+        for _ in range(3):
+            p.add_frame(_loud_frame())
+        assert p.should_process() is True  # 超過上限，不等靜音強制切
+
+    def test_under_max_buffer_does_not_force(self) -> None:
+        p = AudioProcessor(silence_timeout_s=99.0, rms_threshold=300.0, max_buffer_s=10.0)
+        for _ in range(5):
+            p.add_frame(_loud_frame())
+        assert p.should_process() is False
+
+
+@pytest.mark.unit
+class TestHasPending:
+    """has_pending：給 WS 斷線 / idle flush 判斷 buffer 是否還有可轉錄殘餘。"""
+
+    def test_empty_processor_has_no_pending(self) -> None:
+        assert AudioProcessor().has_pending() is False
+
+    def test_buffered_frames_are_pending(self) -> None:
+        p = AudioProcessor()
+        for _ in range(5):  # 5*480*2 = 4800 bytes > _WAV_MIN_BYTES
+            p.add_frame(_loud_frame())
+        assert p.has_pending() is True
+
+    def test_cleared_processor_has_no_pending(self) -> None:
+        p = AudioProcessor()
+        for _ in range(5):
+            p.add_frame(_loud_frame())
+        p.clear()
+        assert p.has_pending() is False
+
+
+@pytest.mark.unit
 class TestWavSerialization:
     def test_get_wav_bytes_none_when_empty(self) -> None:
         p = AudioProcessor()

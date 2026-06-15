@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # 前端 VAD（AudioProcessor RMS 能量門檻、靜音超時）
     FRONTEND_VAD_RMS_THRESHOLD: float = 300.0
     FRONTEND_VAD_SILENCE_TIMEOUT_S: float = 1.0
+    # 累積上限：buffer 超過此秒數就強制切一刀轉錄，不光等靜音。
+    # 避免長段連續語音（或餵檔時靜音偵測失準）無限累積、尾段被丟掉。
+    FRONTEND_VAD_MAX_BUFFER_S: float = 8.0
 
     # 後端 VAD（faster-whisper 過濾靜音段）
     BACKEND_VAD_ENABLED: bool = True
@@ -87,6 +90,7 @@ DEFAULT_LANGUAGE = settings.DEFAULT_LANGUAGE
 
 FRONTEND_VAD_RMS_THRESHOLD = settings.FRONTEND_VAD_RMS_THRESHOLD
 FRONTEND_VAD_SILENCE_TIMEOUT_S = settings.FRONTEND_VAD_SILENCE_TIMEOUT_S
+FRONTEND_VAD_MAX_BUFFER_S = settings.FRONTEND_VAD_MAX_BUFFER_S
 
 BACKEND_VAD_ENABLED = settings.BACKEND_VAD_ENABLED
 BACKEND_VAD_THRESHOLD = settings.BACKEND_VAD_THRESHOLD

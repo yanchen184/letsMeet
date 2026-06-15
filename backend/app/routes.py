@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -32,6 +33,8 @@ from app.config import (
     DB_PATH,
     DEFAULT_LANGUAGE,
     DEVICE,
+    FRONTEND_VAD_SILENCE_TIMEOUT_S,
+    LLM_MODEL,
     STREAM_MODEL,
     WHISPER_CPP_URL,
 )
@@ -39,6 +42,7 @@ from app.llm_client import (
     LLMOutputFormatError,
     build_chat_messages,
     generate_questions,
+    generate_title,
     stream_chat,
     summarize,
 )
@@ -351,13 +355,51 @@ async def chat(req: ChatRequest) -> StreamingResponse | JSONResponse:
     )
 
 
+class TitleRequest(BaseModel):
+    transcript: str = Field(..., description="會議逐字稿全文，用來產生標題")
+
+
+@router.post("/title", response_model=None)
+async def title_endpoint(req: TitleRequest) -> JSONResponse:
+    """用逐字稿產一句會議標題（供儲存表單自動預填，可被使用者覆寫）。"""
+    request_id = uuid.uuid4().hex
+    transcript = (req.transcript or "").strip()
+    if not transcript:
+        return JSONResponse(
+            {"error": "transcript 不可為空"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    try:
+        title = await generate_title(transcript)
+    except httpx.TimeoutException:
+        logger.exception("title LLM timeout [%s]", request_id)
+        return JSONResponse(
+            {"error": "標題產生超時"}, status_code=504, headers={"X-Request-Id": request_id}
+        )
+    except (httpx.HTTPError, LLMOutputFormatError) as exc:
+        logger.exception("title LLM error [%s]: %s", request_id, exc)
+        return JSONResponse(
+            {"error": "標題服務暫時不可用"}, status_code=502, headers={"X-Request-Id": request_id}
+        )
+    return JSONResponse({"title": title}, headers={"X-Request-Id": request_id})
+
+
 @router.get("/health", response_model=None)
 async def health() -> JSONResponse:
     """健康檢查：確認 Whisper 後端已就緒。"""
     if not WHISPER_CPP_URL and _stream_model is None:
         return JSONResponse({"status": "loading"}, status_code=503)
     backend = "whisper.cpp" if WHISPER_CPP_URL else ASR_BACKEND
-    return JSONResponse({"status": "ok", "backend": backend, "model": STREAM_MODEL})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "backend": backend,
+            "model": STREAM_MODEL,
+            "asr_model": STREAM_MODEL,
+            "llm_model": LLM_MODEL,
+        }
+    )
 
 
 # ──────────────────────────────────────────
@@ -382,28 +424,39 @@ async def websocket_stream(ws: WebSocket) -> None:
     await ws.send_json({"type": "connected", "message": "WebSocket 已連接"})
 
     processor = AudioProcessor()
+    # 最後一次收到音訊幀的時間。用於「idle flush」：送幀停了一段時間後，
+    # 即使靜音偵測沒觸發（餵檔 / 慢網路下 wall-clock 間隔被壓縮），也把
+    # buffer 內殘餘的尾段補轉一次——且是趁連線還開著時送回，不會掉字。
+    last_frame_at = datetime.now()
+    idle_flush_s = FRONTEND_VAD_SILENCE_TIMEOUT_S + 0.5
+
+    async def _flush(wav: bytes | None) -> None:
+        if not wav or len(wav) < _WAV_MIN_BYTES:
+            return
+        await ws.send_json({"type": "processing"})
+        try:
+            text = await _transcribe(wav)
+            if text:
+                await ws.send_json({"type": "transcription", "text": text})
+        except Exception:
+            logger.exception("轉錄失敗")
+            await ws.send_json({"type": "error", "message": "轉錄失敗，請重試"})
 
     async def _poll_and_transcribe() -> None:
         """每 200ms 輪詢一次，觸發轉錄並回傳結果。"""
         while True:
             await asyncio.sleep(0.2)
-            if not processor.should_process():
+            idle = (datetime.now() - last_frame_at).total_seconds()
+            # 正常斷句/累積上限觸發，或：停止送幀後 buffer 還有殘餘 → idle flush
+            trigger = processor.should_process() or (
+                idle >= idle_flush_s and processor.has_pending()
+            )
+            if not trigger:
                 continue
 
             wav = processor.get_wav_bytes()
             processor.clear()
-
-            if not wav or len(wav) < _WAV_MIN_BYTES:
-                continue
-
-            await ws.send_json({"type": "processing"})
-            try:
-                text = await _transcribe(wav)
-                if text:
-                    await ws.send_json({"type": "transcription", "text": text})
-            except Exception:
-                logger.exception("轉錄失敗")
-                await ws.send_json({"type": "error", "message": "轉錄失敗，請重試"})
+            await _flush(wav)
 
     poll_task = asyncio.create_task(_poll_and_transcribe())
 
@@ -412,6 +465,7 @@ async def websocket_stream(ws: WebSocket) -> None:
             msg = await ws.receive()
             if "bytes" in msg and msg["bytes"]:
                 processor.add_frame(msg["bytes"])
+                last_frame_at = datetime.now()
     except WebSocketDisconnect:
         logger.info("Client disconnected")
     except asyncio.CancelledError:
@@ -428,6 +482,19 @@ async def websocket_stream(ws: WebSocket) -> None:
             await poll_task
         except asyncio.CancelledError:
             pass
+        # 斷線前 flush 殘餘 buffer：最後一段（使用者按停止 / 餵檔送完）還沒
+        # 被靜音或累積上限觸發轉錄的音訊，這裡補轉一次再關，避免尾段被丟。
+        # poll_task 已停，這裡直接同步取結果；連線可能已關，送不出去就吞掉。
+        if processor.has_pending():
+            wav = processor.get_wav_bytes()
+            processor.clear()
+            if wav and len(wav) >= _WAV_MIN_BYTES:
+                try:
+                    text = await _transcribe(wav)
+                    if text:
+                        await ws.send_json({"type": "transcription", "text": text})
+                except Exception:
+                    logger.exception("斷線前 flush 轉錄失敗")
 
 
 # ──────────────────────────────────────────

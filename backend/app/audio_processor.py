@@ -5,7 +5,11 @@ import struct
 import wave
 from datetime import datetime
 
-from app.config import FRONTEND_VAD_RMS_THRESHOLD, FRONTEND_VAD_SILENCE_TIMEOUT_S
+from app.config import (
+    FRONTEND_VAD_MAX_BUFFER_S,
+    FRONTEND_VAD_RMS_THRESHOLD,
+    FRONTEND_VAD_SILENCE_TIMEOUT_S,
+)
 
 SAMPLE_RATE: int = 16000
 CHANNELS: int = 1
@@ -30,9 +34,11 @@ class AudioProcessor:
         self,
         silence_timeout_s: float = FRONTEND_VAD_SILENCE_TIMEOUT_S,
         rms_threshold: float = FRONTEND_VAD_RMS_THRESHOLD,
+        max_buffer_s: float = FRONTEND_VAD_MAX_BUFFER_S,
     ) -> None:
         self._silence_timeout_s = silence_timeout_s
         self._rms_threshold = rms_threshold
+        self._max_buffer_s = max_buffer_s
         self.reset()
 
     def reset(self) -> None:
@@ -51,12 +57,32 @@ class AudioProcessor:
         elif self._is_speaking and self._silence_start is None:
             self._silence_start = datetime.now()
 
+    def _buffered_seconds(self) -> float:
+        """目前 buffer 內已累積的音訊秒數。"""
+        total_samples = sum(len(f) // BYTES_PER_SAMPLE for f in self._frames)
+        return total_samples / SAMPLE_RATE
+
     def should_process(self) -> bool:
-        """回傳是否應觸發轉錄（偵測到語音後靜音超過 timeout）。"""
-        if not self._is_speaking or not self._frames or self._silence_start is None:
+        """回傳是否應觸發轉錄。
+
+        兩種觸發條件（任一成立）：
+        1. 偵測到語音後靜音超過 silence_timeout（正常斷句）。
+        2. buffer 累積音訊超過 max_buffer 秒（保險絲）：長段連續語音，
+           或餵檔 / 慢網路下靜音偵測失準導致 wall-clock 間隔被壓縮時，
+           不至於無限累積、尾段被丟。
+        """
+        if not self._frames:
+            return False
+        if self._buffered_seconds() >= self._max_buffer_s:
+            return True
+        if not self._is_speaking or self._silence_start is None:
             return False
         elapsed = (datetime.now() - self._silence_start).total_seconds()
         return elapsed >= self._silence_timeout_s
+
+    def has_pending(self) -> bool:
+        """buffer 是否還有可轉錄的殘餘音訊（給 WS 斷線時 flush 用）。"""
+        return bool(self._frames) and len(b"".join(self._frames)) >= _WAV_MIN_BYTES
 
     def get_wav_bytes(self) -> bytes | None:
         """將已收集的幀封裝為 WAV bytes，不修改內部狀態（pure read）。"""

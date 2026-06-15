@@ -1185,6 +1185,36 @@ registerProcessor('pcm16-writer', PCM16Writer);
     formEl.hidden = false;
     const titleInput = $("saveMeetingTitle");
     if (titleInput) titleInput.focus();
+    // 標題還空著 → 用逐字稿自動產一個預填（使用者可改）
+    autofillTitle();
+  }
+
+  // 開儲存表單時，若標題仍空且有逐字稿，呼叫 /api/title 自動預填。
+  // 使用者一旦自己打字就不覆蓋；產生中以 placeholder 提示。
+  async function autofillTitle() {
+    const titleInput = $("saveMeetingTitle");
+    if (!titleInput || titleInput.value.trim()) return;  // 已有內容不動
+    const transcript = getFullTranscript();
+    if (!transcript || !transcript.trim()) return;       // 沒逐字稿不產
+
+    const origPlaceholder = titleInput.placeholder;
+    titleInput.placeholder = "AI 產生標題中…";
+    try {
+      const resp = await fetch(`${API_BASE}/api/title`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      // 僅在「使用者這段期間沒自己打字」時才填，避免蓋掉手動輸入
+      if (resp.ok && data.title && !titleInput.value.trim()) {
+        titleInput.value = data.title;
+      }
+    } catch (_e) {
+      // 產失敗就讓使用者自己打，不擋存檔
+    } finally {
+      titleInput.placeholder = origPlaceholder;
+    }
   }
 
   function hideSaveForm() {
@@ -1742,6 +1772,32 @@ registerProcessor('pcm16-writer', PCM16Writer);
     });
   }
 
+  // 顯示後端正在用的兩個模型（逐字稿 ASR + AI LLM）
+  async function loadModelInfo() {
+    const asrEl = $("asrModel");
+    const llmEl = $("llmModel");
+    if (!asrEl && !llmEl) return;
+    try {
+      const resp = await fetch(`${API_BASE}/api/health`);
+      const data = await resp.json().catch(() => ({}));
+      // 模型名常含 org/ 前綴，只取最後一段顯示，hover 看全名
+      const shortName = (full) => {
+        const s = (full || "").trim();
+        return s ? s.split("/").pop() : "—";
+      };
+      if (asrEl && data.asr_model) {
+        asrEl.textContent = shortName(data.asr_model);
+        asrEl.title = data.asr_model;
+      }
+      if (llmEl && data.llm_model) {
+        llmEl.textContent = shortName(data.llm_model);
+        llmEl.title = data.llm_model;
+      }
+    } catch (_e) {
+      // health 拿不到就維持 "—"，不擋主流程
+    }
+  }
+
   // 初始 UI 狀態
   setConn("offline", "待機");
   updateTranscriptStat();
@@ -1750,4 +1806,5 @@ registerProcessor('pcm16-writer', PCM16Writer);
   renderChatLog();
   refreshAskButton();
   refreshSaveMeetingButton();
+  loadModelInfo();
 })();

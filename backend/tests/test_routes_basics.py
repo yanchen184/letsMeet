@@ -32,7 +32,10 @@ class _FakeProcessor:
         return b"\x00" * 2000
 
     def clear(self) -> None:
-        pass
+        self.frames = []
+
+    def has_pending(self) -> bool:
+        return bool(self.frames)
 
 
 @pytest.fixture
