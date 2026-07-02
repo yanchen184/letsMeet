@@ -10,6 +10,7 @@
   <header class="bar">
     <div class="bar-inner">
       <span class="logo">letsMeet</span>
+      <span class="app-version" title="版本">v1.0.0</span>
       <div class="session-meter" aria-label="會議狀態">
         <span id="connState" class="badge offline">待機</span>
         <span id="elapsed" class="elapsed" aria-label="已錄時間">00:00:00</span>
@@ -38,7 +39,7 @@
         產生問題
       </button>
       <label id="autoAskToggle" class="toggle rail-action" title="每累積數行逐字稿,自動產出追問">
-        <input id="chkAutoAsk" type="checkbox" />
+        <input id="chkAutoAsk" type="checkbox" checked />
         <span aria-hidden="true">✧</span>
         自動產問
       </label>
@@ -49,6 +50,11 @@
       <button id="btnSaveMeeting" class="btn rail-action" type="button" disabled>
         <span aria-hidden="true">▣</span>
         儲存會議
+      </button>
+      <button id="btnAbout" class="btn ghost rail-action" type="button"
+              title="這個產品怎麼跟 AI 結合、底層怎麼運作">
+        <span aria-hidden="true">?</span>
+        關於我
       </button>
       <button id="btnClear" class="btn danger-ghost rail-action" type="button"
               title="清空逐字稿與問題,需要點兩次確認">
@@ -147,7 +153,10 @@
 
       <div id="saveMeetingForm" class="save-meeting-form" hidden>
         <div class="save-meeting-form__row">
-          <label class="save-meeting-form__label" for="saveMeetingTitle">標題</label>
+          <label class="save-meeting-form__label" for="saveMeetingTitle">
+            標題
+            <span id="titleAiBadge" class="title-ai-badge" hidden>✦ AI 產生標題中…</span>
+          </label>
           <input id="saveMeetingTitle" class="save-meeting-form__input" type="text" placeholder="這場會議的標題" />
         </div>
         <div class="save-meeting-form__row">
@@ -179,6 +188,80 @@
           <ul class="history-list"></ul>
         </div>
         <div class="history-modal__detailView" hidden></div>
+      </div>
+    </div>
+
+    <div id="aboutModal" class="about-modal" hidden>
+      <div class="about-modal__panel">
+        <button id="btnAboutClose" class="about-modal__close" type="button" aria-label="關閉">×</button>
+        <div class="about-modal__head">
+          <h2>關於 letsMeet — 底層怎麼運作</h2>
+          <p>即時會議追問助理。麥克風收音 → 語音轉文字 → AI 產出「乙方該追問的問題」，全程在會議當下發生。</p>
+        </div>
+
+        <div class="about-modal__body">
+          <section class="about-section">
+            <h3>① 語音怎麼變成逐字稿（ASR）</h3>
+            <ul>
+              <li>瀏覽器抓麥克風音訊，切成 30ms 小包，經 WebSocket 即時串流到後端。</li>
+              <li>後端用 <b>faster-whisper</b> 語音模型（<code>Breeze-ASR-25</code>）逐段轉成中文文字。</li>
+              <li>後端有 VAD（靜音偵測）過濾沒人講話的片段，避免產生空白或雜訊文字。</li>
+              <li>轉出的每一行都是「真的講出來的話」，AI 只讀這些文字，不會憑空編造。</li>
+            </ul>
+          </section>
+
+          <section class="about-section">
+            <h3>② 建議追問（右上）：AI 讀逐字稿產問題</h3>
+            <ul>
+              <li>AI 扮演「資深乙方專案經理」，任務是找出<b>現在該追問</b>的關鍵問題，幫你當場釐清需求、降低執行風險。</li>
+              <li>每次產出 <b>3–5 題</b>，每題含「要問什麼（可直接念）」＋「為什麼該問（引用對方原話）」。</li>
+              <li>提問優先序：需求模糊 → 範圍未定（「之後再說」）→ 誰能拍板 → 時程資源 → 費用。</li>
+              <li>會<b>去重</b>：把畫面上已問過的題目一起丟給 AI，要求只給新角度，不重複既有問題。</li>
+              <li>用的模型是 <code>Breeze-2-8B-Instruct</code>，輸出強制 JSON 格式解析成卡片。</li>
+            </ul>
+          </section>
+
+          <section class="about-section">
+            <h3>③ 什麼時候會「自動產問」</h3>
+            <ul>
+              <li>打開「自動產問」開關後（<b>預設開啟</b>），系統邊聽邊數新逐字稿行數。</li>
+              <li>每累積 <b>8 行</b>新發言，就自動送一次產問；整場至少要有 <b>3 行</b>才會啟動。</li>
+              <li>只送<b>「上次產問之後的新發言」</b>給 AI（增量），不是每次重讀全文 → 省時、聚焦剛講的內容。</li>
+              <li>手動按「產生問題」也一樣，產完會重置計數，避免手動剛產完馬上又被自動觸發。</li>
+              <li>沒有新發言時，自動產問會安靜跳過，不會重複問同一段。</li>
+            </ul>
+          </section>
+
+          <section class="about-section">
+            <h3>④ 重點摘要跟自動產問的關係</h3>
+            <ul>
+              <li>重點摘要<b>不是獨立功能，是產問的副產品</b>。</li>
+              <li>每次（增量）產問成功後，系統會把「這批新發言」順手送去壓成條列摘要，貼到左側「重點摘要」。</li>
+              <li>所以：<b>有產問 → 才有摘要</b>。沒產過問（例如全程關掉自動產問又沒手動按），摘要區就會是空的。</li>
+              <li>當逐字稿變很長，較舊的內容會被壓成「前段摘要」當背景脈絡餵給 AI，只有最近約 4000 字保留原文 → 兼顧長會議與聚焦最新。</li>
+            </ul>
+          </section>
+
+          <section class="about-section">
+            <h3>⑤ 問 AI（右下）：跟助理對話</h3>
+            <ul>
+              <li>這是一個聊天框，AI 助理讀著<b>目前的逐字稿＋會議背景＋已產生的問題</b>回答你。</li>
+              <li>兩種用法：問「對方剛剛在講什麼／某段是什麼意思」；或討論「接下來該怎麼問、怎麼措辭」。</li>
+              <li>回答用 SSE 逐字串流出來（打字機效果），逐字稿沒提到的它會老實說「逐字稿沒提到」，不硬掰。</li>
+            </ul>
+          </section>
+
+          <section class="about-section">
+            <h3>⑥ 會議背景 & 儲存</h3>
+            <ul>
+              <li>「會議背景」填你的角色、會議資訊後，會一起餵給 AI，讓產問和回答更貼合你的立場。</li>
+              <li>暫停後可把整場（逐字稿＋摘要＋問題）存成一筆會議記錄；可選填 4 位數 PIN。</li>
+              <li>「歷史會議」列表所有人都看得到，但設了 PIN 的場次，要輸入正確 PIN 才能看內容。</li>
+            </ul>
+          </section>
+
+          <p class="about-foot">全程資料在內網後端處理，逐字稿與摘要不外傳第三方雲端。</p>
+        </div>
       </div>
     </div>
   </main>

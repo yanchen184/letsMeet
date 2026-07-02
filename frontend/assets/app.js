@@ -80,7 +80,7 @@
     // ── 新功能狀態 ──
     questionItems: [],       // 累積問題 [{q, why, source}]，疊加不清空
     seenQuestions: new Set(),// 去重用,key = q 文字
-    autoAsk: false,          // 自動產問開關
+    autoAsk: true,           // 自動產問開關（預設開）
     linesSinceAutoAsk: 0,    // 距上次自動產問累積的行數
     selAnchor: null,         // 區間選取起點 index;null = 未選
     selFocus: null,          // 區間選取終點 index
@@ -1164,11 +1164,19 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
   // ─── 存成會議記錄（Task 8）─────────────────────────────────────
   const LS_OWNER_KEY = "letsmeet_owner";
+  const LS_CONTEXT_ROLE_KEY = "letsmeet_context_role";
+  const LS_CONTEXT_INFO_KEY = "letsmeet_context_info";
 
   function refreshSaveMeetingButton() {
     if (!dom.btnSaveMeeting) return;
     const hasContent = state.transcriptLines.length > 0 || state.questionItems.length > 0;
     dom.btnSaveMeeting.disabled = !hasContent;
+
+    // 暫停(非錄音中)且有內容、且尚未開存檔表單 → 發波浪光提示「該存了」
+    const formEl = $("saveMeetingForm");
+    const formOpen = formEl && !formEl.hidden;
+    const shouldHint = hasContent && !state.isRecording && !formOpen;
+    dom.btnSaveMeeting.classList.toggle("is-ready", shouldHint);
   }
 
   function showSaveForm() {
@@ -1183,6 +1191,17 @@ registerProcessor('pcm16-writer', PCM16Writer);
     const msgEl = $("saveMeetingMsg");
     if (msgEl) { msgEl.hidden = true; msgEl.textContent = ""; }
     formEl.hidden = false;
+    // 開表單 → 按鈕的提示光熄掉（提示已達成目的）
+    refreshSaveMeetingButton();
+
+    // 畫面拉到最下面的儲存表單，並用波浪光強調
+    formEl.scrollIntoView({ behavior: "smooth", block: "end" });
+    formEl.classList.remove("is-flash");
+    // reflow 後重新加，確保每次按都重播動畫
+    void formEl.offsetWidth;
+    formEl.classList.add("is-flash");
+    setTimeout(() => formEl.classList.remove("is-flash"), 3800);
+
     const titleInput = $("saveMeetingTitle");
     if (titleInput) titleInput.focus();
     // 標題還空著 → 用逐字稿自動產一個預填（使用者可改）
@@ -1197,8 +1216,9 @@ registerProcessor('pcm16-writer', PCM16Writer);
     const transcript = getFullTranscript();
     if (!transcript || !transcript.trim()) return;       // 沒逐字稿不產
 
-    const origPlaceholder = titleInput.placeholder;
-    titleInput.placeholder = "AI 產生標題中…";
+    const badge = $("titleAiBadge");
+    if (badge) badge.hidden = false;
+    titleInput.classList.add("is-ai-loading");
     try {
       const resp = await fetch(`${API_BASE}/api/title`, {
         method: "POST",
@@ -1213,7 +1233,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
     } catch (_e) {
       // 產失敗就讓使用者自己打，不擋存檔
     } finally {
-      titleInput.placeholder = origPlaceholder;
+      if (badge) badge.hidden = true;
+      titleInput.classList.remove("is-ai-loading");
     }
   }
 
@@ -1328,9 +1349,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
     listEl.appendChild(loadingLi);
 
     try {
-      const owner = localStorage.getItem(LS_OWNER_KEY) || "";
-      const qs = owner ? `?owner=${encodeURIComponent(owner)}` : "";
-      const resp = await fetch(`${API_BASE}/api/meetings${qs}`);
+      // 列表全公開:不帶 owner，後端回全部會議（內容仍由 PIN 保護）
+      const resp = await fetch(`${API_BASE}/api/meetings`);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       _historyAllMeetings = data.meetings || [];
@@ -1694,6 +1714,16 @@ registerProcessor('pcm16-writer', PCM16Writer);
     });
   }
 
+  // 還原上次填的會議背景(我的角色與重點 / 會議資訊)
+  if (dom.contextHint) {
+    const savedRole = localStorage.getItem(LS_CONTEXT_ROLE_KEY);
+    if (savedRole) dom.contextHint.value = savedRole;
+  }
+  if (dom.meetingInfo) {
+    const savedInfo = localStorage.getItem(LS_CONTEXT_INFO_KEY);
+    if (savedInfo) dom.meetingInfo.value = savedInfo;
+  }
+
   // 情境範本:點了覆蓋填入 contextHint
   document.querySelectorAll(".preset[data-preset]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1711,12 +1741,20 @@ registerProcessor('pcm16-writer', PCM16Writer);
   if (dom.contextHint) {
     dom.contextHint.addEventListener("input", () => {
       const cur = dom.contextHint.value;
+      // 記住使用者填的角色與重點
+      localStorage.setItem(LS_CONTEXT_ROLE_KEY, cur);
       const matched = Object.values(CONTEXT_PRESETS).includes(cur);
       if (!matched) {
         document.querySelectorAll(".preset.active").forEach((b) =>
           b.classList.remove("active")
         );
       }
+    });
+  }
+  // 記住使用者填的會議資訊
+  if (dom.meetingInfo) {
+    dom.meetingInfo.addEventListener("input", () => {
+      localStorage.setItem(LS_CONTEXT_INFO_KEY, dom.meetingInfo.value);
     });
   }
 
@@ -1727,6 +1765,25 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.contextBody.hidden = !collapsed;
       dom.btnContextToggle.setAttribute("aria-expanded", String(collapsed));
       dom.btnContextToggle.textContent = collapsed ? "收合" : "展開";
+    });
+  }
+
+  // 關於我 modal
+  const aboutModal = $("aboutModal");
+  const btnAbout = $("btnAbout");
+  const btnAboutClose = $("btnAboutClose");
+  if (btnAbout && aboutModal) {
+    const openAbout = () => { aboutModal.hidden = false; };
+    const closeAbout = () => { aboutModal.hidden = true; };
+    btnAbout.addEventListener("click", openAbout);
+    if (btnAboutClose) btnAboutClose.addEventListener("click", closeAbout);
+    // 點遮罩背景關閉(點 panel 內不關)
+    aboutModal.addEventListener("click", (ev) => {
+      if (ev.target === aboutModal) closeAbout();
+    });
+    // Esc 關閉
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && !aboutModal.hidden) closeAbout();
     });
   }
 
