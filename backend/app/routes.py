@@ -136,6 +136,10 @@ class QuestionsRequest(BaseModel):
         default=None,
         description="畫面上已存在的問題文字清單；注入 prompt 讓 AI 避免產出重複或近似的問題",
     )
+    recent_chat: list[dict[str, str]] | None = Field(
+        default=None,
+        description="使用者與 AI 助理最近幾則對話 [{role, content}]；反映當下關注點，引導追問方向",
+    )
 
 
 @router.post("/questions", response_model=None)
@@ -158,6 +162,7 @@ async def questions(req: QuestionsRequest) -> JSONResponse:
             older_transcript=req.older_transcript,
             context_hint=req.context,
             asked_questions=req.asked_questions,
+            recent_chat=req.recent_chat,
         )
     except LLMOutputFormatError as exc:
         logger.warning("LLM output parse failed [%s]: %s", request_id, exc)

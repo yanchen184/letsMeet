@@ -113,6 +113,12 @@ ASKED_BLOCK_TEMPLATE = """【已問過的問題】（這些都問過了，請勿
 """
 
 
+RECENT_CHAT_BLOCK_TEMPLATE = """【近期討論】（乙方剛剛和 AI 助理的對話，反映他當下在意的重點，請據此調整追問方向）
+{chat}
+
+"""
+
+
 SUMMARIZE_SYSTEM_PROMPT = f"""你是會議紀錄助理。
 請把以下逐字稿濃縮成 {SUMMARIZE_MAX_CHARS} 字內的條列要點，
 保留：具體承諾、數字、時程、人名、待釐清項目。
@@ -399,6 +405,7 @@ async def generate_questions(
     older_transcript: str | None = None,
     context_hint: str | None = None,
     asked_questions: list[str] | None = None,
+    recent_chat: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """產生 3-5 個追問問題（聚焦最新發言）。
 
@@ -408,6 +415,7 @@ async def generate_questions(
         older_transcript: 游標前已問過的舊原文；無 prior_summary 時由後端摘要成背景並回傳
         context_hint: 乙方提供的會議背景／角色提示；非空時注入 prompt 引導提問方向
         asked_questions: 畫面上已存在的問題文字清單；注入 prompt 叫 LLM 避免重複或近似
+        recent_chat: 使用者與 AI 助理最近幾則對話 [{role, content}]；反映當下關注點，引導追問方向
 
     Returns:
         {
@@ -463,6 +471,18 @@ async def generate_questions(
     if asked_clean:
         asked_block = "\n".join(f"- {q}" for q in asked_clean)
         user_prompt = ASKED_BLOCK_TEMPLATE.format(asked=asked_block) + user_prompt
+
+    # 近期討論在背景之後、user_prompt 之前：讓「乙方當下在意什麼」最貼近提問指令
+    chat_lines: list[str] = []
+    for m in recent_chat or []:
+        content = (m.get("content") or "").strip() if isinstance(m, dict) else ""
+        if not content:
+            continue
+        who = "乙方" if (m.get("role") == "user") else "AI"
+        chat_lines.append(f"{who}：{content}")
+    if chat_lines:
+        chat_block = "\n".join(chat_lines)
+        user_prompt = RECENT_CHAT_BLOCK_TEMPLATE.format(chat=chat_block) + user_prompt
 
     if context_hint and context_hint.strip():
         user_prompt = CONTEXT_BLOCK_TEMPLATE.format(context=context_hint.strip()) + user_prompt

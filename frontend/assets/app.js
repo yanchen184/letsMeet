@@ -1059,6 +1059,10 @@ registerProcessor('pcm16-writer', PCM16Writer);
           older_transcript: olderTranscript,
           context: buildContext(),
           asked_questions: state.questionItems.map((it) => it.q),
+          // 最近 4 則問 AI 對話當脈絡:反映使用者當下在意的重點，引導追問方向
+          recent_chat: state.chatHistory
+            .slice(-4)
+            .map((m) => ({ role: m.role, content: m.content })),
         }),
       });
       if (!resp.ok) {
