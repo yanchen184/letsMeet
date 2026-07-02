@@ -370,7 +370,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
     state.chatHistory = [];
     clearSelection();
     dom.transcript.innerHTML =
-      '<p class="placeholder">按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。</p>';
+      '<p class="placeholder">按「錄音」開始即時轉錄。音訊會傳送至內網伺服器處理，不會送往外部雲端服務。</p>';
     dom.questions.innerHTML =
       '<p class="placeholder">按「產生問題」由 AI 從逐字稿產出 3–5 個追問。</p>';
     renderDigests();
@@ -1772,22 +1772,56 @@ registerProcessor('pcm16-writer', PCM16Writer);
     });
   }
 
-  // 關於我 modal
+  // 關於 letsMeet modal
   const aboutModal = $("aboutModal");
   const btnAbout = $("btnAbout");
   const btnAboutClose = $("btnAboutClose");
   if (btnAbout && aboutModal) {
-    const openAbout = () => { aboutModal.hidden = false; };
-    const closeAbout = () => { aboutModal.hidden = true; };
+    const panel = aboutModal.querySelector(".about-modal__panel");
+    let aboutLastFocus = null;
+    const getFocusable = () => Array.from(aboutModal.querySelectorAll(
+      'button:not([disabled]), summary, a[href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ));
+    const openAbout = () => {
+      aboutLastFocus = document.activeElement;
+      aboutModal.hidden = false;
+      document.body.classList.add("modal-open");
+      btnAboutClose?.focus();
+    };
+    const closeAbout = () => {
+      aboutModal.hidden = true;
+      document.body.classList.remove("modal-open");
+      aboutLastFocus?.focus();
+    };
     btnAbout.addEventListener("click", openAbout);
     if (btnAboutClose) btnAboutClose.addEventListener("click", closeAbout);
     // 點遮罩背景關閉(點 panel 內不關)
     aboutModal.addEventListener("click", (ev) => {
       if (ev.target === aboutModal) closeAbout();
     });
-    // Esc 關閉
+    // Esc 關閉；Tab 保持在 dialog 內。
     document.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape" && !aboutModal.hidden) closeAbout();
+      if (aboutModal.hidden) return;
+      if (ev.key === "Escape") {
+        closeAbout();
+        return;
+      }
+      if (ev.key !== "Tab") return;
+      const focusable = getFocusable();
+      if (focusable.length === 0) {
+        ev.preventDefault();
+        panel?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault();
+        last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus();
+      }
     });
   }
 

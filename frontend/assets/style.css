@@ -2190,7 +2190,7 @@ main.app-shell {
   padding: 2px 7px;
 }
 
-/* ── 關於我 modal ── */
+/* ── 關於 letsMeet modal ── */
 .about-modal {
   position: fixed;
   inset: 0;
@@ -2213,6 +2213,7 @@ main.app-shell {
   border-radius: 14px;
   box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
   padding: 28px 30px 24px;
+  outline: none;
 }
 
 .about-modal__close {
@@ -2236,6 +2237,15 @@ main.app-shell {
   font-size: 21px;
   color: #065f46;
 }
+.about-eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: #047857;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 .about-modal__head p {
   margin: 0 0 8px;
   color: var(--muted);
@@ -2244,6 +2254,8 @@ main.app-shell {
 }
 
 .about-modal__body { margin-top: 8px; }
+
+body.modal-open { overflow: hidden; }
 
 .about-section {
   padding: 14px 0;
@@ -2254,6 +2266,109 @@ main.app-shell {
   font-size: 15.5px;
   font-weight: 700;
 }
+.about-section__head {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+.about-section__head > span {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #a7f3d0;
+  border-radius: 7px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 11px;
+  font-weight: 800;
+}
+.about-section__head h3 { margin: 2px 0 2px; }
+.about-section__head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.about-flow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.about-flow li {
+  position: relative;
+  min-height: 92px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.about-flow li:not(:last-child)::after {
+  content: "→";
+  position: absolute;
+  top: 50%;
+  right: -9px;
+  z-index: 1;
+  color: #94a3b8;
+  transform: translateY(-50%);
+}
+.about-flow b,
+.about-flow span { display: block; }
+.about-flow b { margin-bottom: 5px; color: #065f46; }
+.about-flow span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.about-flow-note {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  border-left: 3px solid #10b981;
+  background: #f0fdf4;
+  color: #14532d;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.about-guards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.about-guards article {
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.about-guards b { color: var(--ink); font-size: 13px; }
+.about-guards p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+
+.about-section--trust ul {
+  padding: 12px 14px 12px 32px;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #fffbeb;
+}
+
+.about-tech {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.about-tech > summary {
+  padding: 12px 14px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  background: #f8fafc;
+}
+.about-tech[open] > summary { border-bottom: 1px solid var(--border); }
+.about-tech__body { padding: 0 14px 4px; }
+.about-tech__body .about-section:first-child { border-top: 0; }
 .about-section ul {
   margin: 0;
   padding-left: 20px;
@@ -2281,6 +2396,14 @@ main.app-shell {
   border-top: 1px solid var(--border);
   font-size: 13px;
   color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .about-modal { padding: 10px; }
+  .about-modal__panel { max-height: 94vh; padding: 22px 18px 18px; }
+  .about-flow { grid-template-columns: 1fr 1fr; }
+  .about-flow li:not(:last-child)::after { display: none; }
+  .about-guards { grid-template-columns: 1fr; }
 }
 
 /* 標頭版本徽章（logo 右側，中左位置） */

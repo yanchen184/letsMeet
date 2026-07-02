@@ -10,7 +10,7 @@
   <header class="bar">
     <div class="bar-inner">
       <span class="logo">letsMeet</span>
-      <span class="app-version" title="版本">v1.0.0</span>
+      <span class="app-version" title="版本">v1.1.0</span>
       <div class="session-meter" aria-label="會議狀態">
         <span id="connState" class="badge offline">待機</span>
         <span id="elapsed" class="elapsed" aria-label="已錄時間">00:00:00</span>
@@ -52,9 +52,9 @@
         儲存會議
       </button>
       <button id="btnAbout" class="btn ghost rail-action" type="button"
-              title="這個產品怎麼跟 AI 結合、底層怎麼運作">
+              title="了解 letsMeet 的功能、資料處理與技術細節">
         <span aria-hidden="true">?</span>
-        關於我
+        關於 letsMeet
       </button>
       <button id="btnClear" class="btn danger-ghost rail-action" type="button"
               title="清空逐字稿與問題,需要點兩次確認">
@@ -116,7 +116,7 @@
           <summary class="transcript-summary">完整逐字稿</summary>
           <div id="transcript" class="transcript" aria-live="polite">
             <p class="placeholder">
-              按「錄音」開始即時轉錄。會請求麥克風權限,音訊僅在本機處理。
+              按「錄音」開始即時轉錄。音訊會傳送至內網伺服器處理，不會送往外部雲端服務。
             </p>
           </div>
         </details>
@@ -191,81 +191,98 @@
       </div>
     </div>
 
-    <div id="aboutModal" class="about-modal" hidden>
-      <div class="about-modal__panel">
+    <div id="aboutModal" class="about-modal" hidden
+         role="dialog" aria-modal="true" aria-labelledby="aboutTitle" aria-describedby="aboutIntro">
+      <div class="about-modal__panel" tabindex="-1">
         <button id="btnAboutClose" class="about-modal__close" type="button" aria-label="關閉">×</button>
         <div class="about-modal__head">
-          <h2>關於 letsMeet — 底層怎麼運作</h2>
-          <p>即時會議追問助理。麥克風收音 → 語音轉文字 → AI 產出「乙方該追問的問題」，全程在會議當下發生。</p>
+          <span class="about-eyebrow">會議當下的 AI 助理</span>
+          <h2 id="aboutTitle">關於 letsMeet</h2>
+          <p id="aboutIntro">letsMeet 把會議語音即時整理成逐字稿，並提醒你現在該追問什麼，避免散會後才發現關鍵問題沒有問清楚。</p>
         </div>
 
         <div class="about-modal__body">
-          <section class="about-section">
-            <h3>① 語音怎麼變成逐字稿（ASR）</h3>
+          <section class="about-section about-section--flow">
+            <div class="about-section__head">
+              <span>01</span>
+              <div>
+                <h3>一個問題是怎麼產生的</h3>
+                <p>letsMeet 不直接猜測會議內容，而是沿著固定資料流程產生建議。</p>
+              </div>
+            </div>
+            <ol class="about-flow" aria-label="資料處理流程">
+              <li><b>聽見</b><span>麥克風音訊送到內網後端</span></li>
+              <li><b>轉錄</b><span>語音模型產生可核對的逐字稿</span></li>
+              <li><b>理解</b><span>AI 讀取逐字稿、會議背景與近期對話</span></li>
+              <li><b>建議</b><span>輸出該追問什麼，以及為什麼值得問</span></li>
+            </ol>
+            <p class="about-flow-note">每一個建議都建立在畫面上看得到的逐字稿上；你可以回頭核對來源，不需要盲目相信 AI。</p>
+          </section>
+
+          <section class="about-section about-section--guards">
+            <div class="about-section__head">
+              <span>02</span>
+              <div>
+                <h3>系統怎麼降低錯誤</h3>
+                <p>透過聚焦、去重與保留上下文，讓建議更接近會議當下。</p>
+              </div>
+            </div>
+            <div class="about-guards">
+              <article><b>聚焦最新發言</b><p>主要分析上次產問後的新內容，避免一直追問已經談完的事。</p></article>
+              <article><b>保留前段脈絡</b><p>舊內容轉成摘要當背景，長會議也能記得前面已經談過什麼。</p></article>
+              <article><b>避免重複問題</b><p>把畫面上已有的問題一起交給 AI，要求尋找不同角度。</p></article>
+              <article><b>讓你補充立場</b><p>角色、會議目標和近期 AI 對話會影響下一次建議方向。</p></article>
+            </div>
+          </section>
+
+          <section class="about-section about-section--trust">
+            <div class="about-section__head">
+              <span>03</span>
+              <div>
+                <h3>信任來自誠實揭露限制</h3>
+                <p>這是會議輔助工具，不是不可出錯的會議裁判。</p>
+              </div>
+            </div>
             <ul>
-              <li>瀏覽器把麥克風音訊切成 30<b>ms</b> 小包（一秒約 33 包），<b>一直無條件</b>經 WebSocket 串流到後端 — 送包本身不判斷斷句。</li>
-              <li>後端邊收邊用 <b>能量＋靜音</b>判斷句子邊界：講完話停頓約 <b>1 秒</b>就把這一句送去轉錄；若一直講不停，累積滿 <b>8 秒</b>也強制切一段。所以字是<b>跟著你的講話節奏</b>冒出來，不是固定間隔。</li>
-              <li>切好的一段音訊交給 <b>faster-whisper</b>（<code>Breeze-ASR-25</code>）轉成中文；Whisper 內建 VAD 會再把這段裡的靜音濾掉，避免對空白幻聽出雜字。</li>
-              <li>轉出的每一行都是「真的講出來的話」，AI 只讀這些文字，不會憑空編造。</li>
+              <li>音訊會傳送至<b>內網 letsMeet 後端</b>進行語音轉錄；目前部署不會把逐字稿與摘要送往外部雲端服務。</li>
+              <li>AI 會以逐字稿、會議背景與近期對話為依據產生內容，但語音辨識和 AI 回覆仍可能有誤，<b>重要決議請回頭核對原始內容</b>。</li>
+              <li>四位 PIN 是方便內部使用的<b>簡易存取保護</b>，不是帳號權限或高強度加密機制。</li>
             </ul>
           </section>
 
-          <section class="about-section">
-            <h3>② 建議追問（右上）：AI 讀逐字稿產問題</h3>
-            <ul>
-              <li>AI 扮演「資深乙方專案經理」，任務是找出<b>現在該追問</b>的關鍵問題，幫你當場釐清需求、降低執行風險。</li>
-              <li>每次產出 <b>3–5 題</b>，每題含「要問什麼（可直接念）」＋「為什麼該問（引用對方原話）」。</li>
-              <li>提問優先序：需求模糊 → 範圍未定（「之後再說」）→ 誰能拍板 → 時程資源 → 費用。</li>
-              <li>會<b>去重</b>：把畫面上已問過的題目一起丟給 AI，要求只給新角度，不重複既有問題。</li>
-              <li>用的模型是 <code>Breeze-2-8B-Instruct</code>，輸出強制 JSON 格式解析成卡片。</li>
-            </ul>
-          </section>
+          <details class="about-tech">
+            <summary>查看技術細節</summary>
+            <div class="about-tech__body">
+              <section class="about-section">
+                <h3>語音如何變成逐字稿</h3>
+                <ul>
+                  <li>瀏覽器把音訊切成 30ms 小包，透過 WebSocket 串流到後端。</li>
+                  <li>後端以能量和靜音判斷句子邊界：停頓約 1 秒送出一段；持續說話達 8 秒也會切段。</li>
+                  <li><code>faster-whisper</code> 搭配 <code>Breeze-ASR-25</code> 轉錄，並用 VAD 過濾靜音。</li>
+                </ul>
+              </section>
 
-          <section class="about-section">
-            <h3>③ 什麼時候會「自動產問」</h3>
-            <ul>
-              <li>打開「自動產問」開關後（<b>預設開啟</b>），系統邊聽邊數新逐字稿行數。</li>
-              <li>每累積 <b>8 行</b>新發言，就自動送一次產問；整場至少要有 <b>3 行</b>才會啟動。</li>
-              <li>送給 AI 的是<b>「前段重點摘要 ＋ 上次產問後的新發言」</b>：新發言是主角（要 AI 聚焦剛講的），摘要當背景脈絡（讓 AI 記得前面談過什麼），而不是每次重讀整份全文 → 省 token 又不失上下文。</li>
-              <li>手動按「產生問題」也一樣，產完會重置計數，避免手動剛產完馬上又被自動觸發。</li>
-              <li>沒有新發言時，自動產問會安靜跳過，不會重複問同一段。</li>
-              <li><b>問 AI 的對話也會影響產問</b>：產問時會一併帶上你最近幾則「問 AI」對話當脈絡，反映你當下在意的重點 → 你剛跟助理討論過的方向，下一次追問就會朝那邊聚焦。</li>
-            </ul>
-          </section>
+              <section class="about-section">
+                <h3>AI 如何產生追問與摘要</h3>
+                <ul>
+                  <li>AI 以資深乙方專案經理的角度，優先檢查需求模糊、範圍、決策者、時程資源與費用。</li>
+                  <li>自動產問預設開啟；每累積 8 行新發言觸發一次，整場至少要有 3 行逐字稿。</li>
+                  <li>每次聚焦上次產問後的新發言，搭配前段摘要和近期「問 AI」對話維持脈絡並減少重複。</li>
+                  <li>超過約 6000 字時，較舊內容會壓成摘要，最近約 4000 字保留原文。</li>
+                  <li>重點摘要會在產問時同步更新；沒有產問時，摘要區可能維持空白。</li>
+                </ul>
+              </section>
 
-          <section class="about-section">
-            <h3>④ 重點摘要跟自動產問的關係</h3>
-            <ul>
-              <li>重點摘要<b>不是獨立功能，是產問的副產品</b>。</li>
-              <li>每次（增量）產問成功後，系統會把「這批新發言」順手送去壓成條列摘要，貼到左側「重點摘要」。</li>
-              <li>所以：<b>有產問 → 才有摘要</b>。沒產過問（例如全程關掉自動產問又沒手動按），摘要區就會是空的。</li>
-              <li>這份摘要就是上面 ③ 產問時當「前段重點」帶回去的背景 — 兩件事其實是同一份摘要在流轉：<b>產問生出摘要 → 下次產問又把摘要當背景</b>，滾動累積。</li>
-              <li>逐字稿超過約 6000 字才會啟動這套滑動視窗：較舊內容壓成摘要，最近約 4000 字保留原文 → 兼顧長會議與聚焦最新；短會議則直接把全文送 AI，精度最高。</li>
-            </ul>
-          </section>
-
-          <section class="about-section">
-            <h3>⑤ 問 AI（右下）：跟助理對話</h3>
-            <ul>
-              <li>這是一個聊天框，AI 助理讀著<b>目前的逐字稿＋會議背景＋已產生的問題</b>回答你。</li>
-              <li>兩種用法：問「對方剛剛在講什麼／某段是什麼意思」；或討論「接下來該怎麼問、怎麼措辭」。</li>
-              <li>回答用 SSE 逐字串流出來（打字機效果），逐字稿沒提到的它會老實說「逐字稿沒提到」，不硬掰。</li>
-            </ul>
-          </section>
-
-          <section class="about-section">
-            <h3>⑥ 會議背景 & 儲存</h3>
-            <ul>
-              <li>「會議背景」填你的角色、會議資訊後，會一起餵給 AI，讓產問和回答更貼合你的立場；這兩欄會記在瀏覽器本機，下次打開自動帶回上次填的內容。</li>
-              <li><b>中途才補背景也算數</b>：背景是「產問／問 AI 當下」即時讀取的，所以錄到一半才填、或隨時修改，<b>下一次</b>建議追問和問 AI 就會用到新背景，不用重開或重錄。</li>
-              <li>但<b>只對「補之後」的產問生效</b>：補背景前已經產出的舊問題卡片不會自動重算，想讓舊內容也套上新背景，手動再按一次「產生問題」即可。</li>
-              <li><b>重點摘要不受背景影響</b>：摘要是把逐字稿機械濃縮成條列，只看「講了什麼」、不看你的立場，所以改背景不會改變摘要內容（這樣摘要才能保持中立記錄）。</li>
-              <li>暫停後可把整場（逐字稿＋摘要＋問題）存成一筆會議記錄；可選填 4 位數 PIN。</li>
-              <li>「歷史會議」列表所有人都看得到，但設了 PIN 的場次，要輸入正確 PIN 才能看內容。</li>
-            </ul>
-          </section>
-
-          <p class="about-foot">全程資料在內網後端處理，逐字稿與摘要不外傳第三方雲端。</p>
+              <section class="about-section">
+                <h3>問 AI 與會議背景</h3>
+                <ul>
+                  <li>「問 AI」會參考目前逐字稿、會議背景和已產生的問題，回覆以 SSE 即時顯示。</li>
+                  <li>角色與會議資訊會保存在這台瀏覽器；中途修改後，下一次產問與 AI 回覆就會使用新背景。</li>
+                  <li>背景不會回頭改寫已產生的問題，也不會改變中立的重點摘要。</li>
+                </ul>
+              </section>
+            </div>
+          </details>
         </div>
       </div>
     </div>
