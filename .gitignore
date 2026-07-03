@@ -30,6 +30,9 @@ input/processed/
 output/
 *.log
 
+# Dev 餵錄音檔模式的本機測試音檔
+*.wav
+
 # Models / large binaries
 models/
 *.bin
