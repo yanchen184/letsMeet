@@ -1,15 +1,21 @@
 {
   auto_https off
   admin off
-  # 手機等 client 不送 SNI（直接打 https://10.1.1.7:8444）時，套用域名憑證而非拒絕握手
+  # 手機等 client 不送 SNI（直接打 https://10.1.1.7）時，套用域名憑證而非拒絕握手
   default_sni letsmeet.wezoomtek.com.tw
 }
 
-letsmeet.wezoomtek.com.tw:443, 10.1.1.7:443 {
+# HTTPS：letsmeet 與 meet 兩個域名共用同一張憑證（SAN 已含兩者 + 10.1.1.7）
+letsmeet.wezoomtek.com.tw:443, meet.wezoomtek.com.tw:443, 10.1.1.7:443 {
   tls /etc/letsmeet-tls/server.crt /etc/letsmeet-tls/server.key
 
   reverse_proxy frontend:80 {
     header_up Host {host}
     header_up X-Real-IP {remote}
   }
+}
+
+# HTTP :80 一律 301 轉到 HTTPS（麥克風 getUserMedia 需要 secure context）
+http://letsmeet.wezoomtek.com.tw, http://meet.wezoomtek.com.tw, http://10.1.1.7 {
+  redir https://{host}{uri} permanent
 }
