@@ -597,12 +597,21 @@ async def websocket_stream(ws: WebSocket) -> None:
     last_frame_at = datetime.now()
     idle_flush_s = FRONTEND_VAD_SILENCE_TIMEOUT_S + 0.5
 
-    async def _flush(wav: bytes | None) -> None:
+    async def _flush(wav: bytes | None, reason: str = "vad") -> None:
         if not wav or len(wav) < _WAV_MIN_BYTES:
             return
         await ws.send_json({"type": "processing"})
         try:
+            t0 = time.perf_counter()
             text = await _transcribe(wav)
+            infer_ms = int((time.perf_counter() - t0) * 1000)
+            # 音長：16k mono 16-bit → 每秒 32000 bytes（扣掉 44-byte wav header）
+            audio_sec = max(0.0, (len(wav) - 44) / 32000.0)
+            rtf = infer_ms / (audio_sec * 1000) if audio_sec > 0 else 0.0
+            logger.info(
+                "stream transcribe reason=%s audio_sec=%.2f infer_ms=%d rtf=%.2f chars=%d",
+                reason, audio_sec, infer_ms, rtf, len(text or ""),
+            )
             if text:
                 await ws.send_json({"type": "transcription", "text": text})
         except Exception:
@@ -615,15 +624,14 @@ async def websocket_stream(ws: WebSocket) -> None:
             await asyncio.sleep(0.2)
             idle = (datetime.now() - last_frame_at).total_seconds()
             # 正常斷句/累積上限觸發，或：停止送幀後 buffer 還有殘餘 → idle flush
-            trigger = processor.should_process() or (
-                idle >= idle_flush_s and processor.has_pending()
-            )
-            if not trigger:
+            by_vad = processor.should_process()
+            by_idle = idle >= idle_flush_s and processor.has_pending()
+            if not (by_vad or by_idle):
                 continue
 
             wav = processor.get_wav_bytes()
             processor.clear()
-            await _flush(wav)
+            await _flush(wav, reason="vad" if by_vad else "idle")
 
     poll_task = asyncio.create_task(_poll_and_transcribe())
 
@@ -657,7 +665,15 @@ async def websocket_stream(ws: WebSocket) -> None:
             processor.clear()
             if wav and len(wav) >= _WAV_MIN_BYTES:
                 try:
+                    t0 = time.perf_counter()
                     text = await _transcribe(wav)
+                    infer_ms = int((time.perf_counter() - t0) * 1000)
+                    audio_sec = max(0.0, (len(wav) - 44) / 32000.0)
+                    rtf = infer_ms / (audio_sec * 1000) if audio_sec > 0 else 0.0
+                    logger.info(
+                        "stream transcribe reason=disconnect audio_sec=%.2f infer_ms=%d rtf=%.2f chars=%d",
+                        audio_sec, infer_ms, rtf, len(text or ""),
+                    )
                     if text:
                         await ws.send_json({"type": "transcription", "text": text})
                 except Exception:
