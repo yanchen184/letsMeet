@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -18,7 +19,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,7 @@ from app.config import (
     FRONTEND_VAD_SILENCE_TIMEOUT_S,
     LLM_MODEL,
     STREAM_MODEL,
+    UPLOAD_MAX_BYTES,
     WHISPER_CPP_URL,
 )
 from app.llm_client import (
@@ -388,6 +390,166 @@ async def title_endpoint(req: TitleRequest) -> JSONResponse:
             {"error": "標題服務暫時不可用"}, status_code=502, headers={"X-Request-Id": request_id}
         )
     return JSONResponse({"title": title}, headers={"X-Request-Id": request_id})
+
+
+# ──────────────────────────────────────────
+# 上傳音檔批次轉錄
+#
+# POST /api/transcribe-file
+#   body:    音檔原始 bytes（WAV/MP3/M4A/OGG/WebM…，application/octet-stream）
+#   header:  X-Filename（選填，僅記 log，需 URL-encode）
+#   回應:    SSE 串流，逐段推回
+#     data: {"type": "segment", "t": 12.3, "end": 15.1, "text": "..."}
+#     data: {"type": "done", "segments": N}
+#     data: {"type": "error", "message": "..."}
+#     data: [DONE]
+#
+# faster-whisper 直接吃整檔（PyAV 解碼任意格式），segments generator 邊轉
+# 邊推，前端逐行浮出、帶檔案內真實時間戳；whisper.cpp / transformers 後端
+# 沒有分段串流，先用 ffmpeg 轉 16k mono WAV 再一次轉錄、以單段回傳。
+# ──────────────────────────────────────────
+
+
+def _ffmpeg_to_wav16k(data: bytes) -> bytes:
+    """用 ffmpeg 把任意格式音訊轉成 16kHz mono PCM16 WAV bytes。"""
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-f", "wav", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000",
+            "pipe:1",
+        ],
+        input=data,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        detail = proc.stderr.decode(errors="ignore").strip()[:200]
+        raise RuntimeError(f"ffmpeg 解碼失敗: {detail or 'unknown'}")
+    return proc.stdout
+
+
+def _iter_file_segments(model: Any, data: bytes, language: str) -> Any:
+    """faster-whisper 整檔轉錄，yield (start, end, text)。在 worker thread 執行。"""
+    import io
+
+    transcribe_kwargs: dict[str, Any] = {
+        "language": language if language != "auto" else None,
+        "vad_filter": BACKEND_VAD_ENABLED,
+        "condition_on_previous_text": True,
+    }
+    if BACKEND_VAD_ENABLED:
+        transcribe_kwargs["vad_parameters"] = {
+            "threshold": BACKEND_VAD_THRESHOLD,
+            "min_silence_duration_ms": BACKEND_VAD_SILENCE_MS,
+            "speech_pad_ms": BACKEND_VAD_SPEECH_PAD_MS,
+        }
+    segments, _info = model.transcribe(io.BytesIO(data), **transcribe_kwargs)
+    for seg in segments:
+        yield seg.start, seg.end, seg.text.strip()
+
+
+@router.post("/transcribe-file", response_model=None)
+async def transcribe_file(request: Request) -> StreamingResponse | JSONResponse:
+    """整檔轉錄上傳的錄音，segments 以 SSE 逐段推回前端。"""
+    request_id = uuid.uuid4().hex
+    data = await request.body()
+    if not data:
+        return JSONResponse(
+            {"error": "音檔不可為空"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    if len(data) > UPLOAD_MAX_BYTES:
+        return JSONResponse(
+            {"error": f"音檔超過大小上限 {UPLOAD_MAX_BYTES // (1024 * 1024)} MB"},
+            status_code=413,
+            headers={"X-Request-Id": request_id},
+        )
+    filename = request.headers.get("x-filename", "upload")
+    logger.info(
+        "transcribe-file start [%s] filename=%s bytes=%d", request_id, filename, len(data)
+    )
+
+    def _sse(payload: dict[str, Any]) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    async def _event_stream() -> Any:
+        started = time.perf_counter()
+        count = 0
+        try:
+            if WHISPER_CPP_URL or ASR_BACKEND == "transformers":
+                # 單段模式：ffmpeg 正規化後走既有轉錄策略一次到位
+                wav = await asyncio.to_thread(_ffmpeg_to_wav16k, data)
+                text = (await _transcribe(wav)).strip()
+                if text:
+                    count = 1
+                    yield _sse({"type": "segment", "t": 0.0, "end": None, "text": text})
+            else:
+                model = await asyncio.to_thread(_get_stream_model)
+                loop = asyncio.get_running_loop()
+                queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+                def _worker() -> None:
+                    # 轉錄無法中途取消；client 斷線後 thread 會把剩餘段落
+                    # 丟進 queue 自然結束（daemon，不阻塞關機）。
+                    try:
+                        for start, end, text in _iter_file_segments(
+                            model, data, DEFAULT_LANGUAGE
+                        ):
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, ("segment", (start, end, text))
+                            )
+                        loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+                    except Exception as exc:  # noqa: BLE001 - 轉錄層任何錯誤都要回報前端
+                        logger.exception("transcribe-file worker failed [%s]", request_id)
+                        loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+
+                threading.Thread(target=_worker, daemon=True).start()
+                while True:
+                    kind, payload = await queue.get()
+                    if kind == "segment":
+                        start, end, text = payload
+                        if text:
+                            count += 1
+                            yield _sse(
+                                {"type": "segment", "t": start, "end": end, "text": text}
+                            )
+                    elif kind == "error":
+                        yield _sse({"type": "error", "message": "轉錄失敗，請確認音檔格式後重試"})
+                        yield "data: [DONE]\n\n"
+                        return
+                    else:  # done
+                        break
+
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            logger.info(
+                "transcribe-file ok [%s] segments=%d latency_ms=%d",
+                request_id,
+                count,
+                latency_ms,
+            )
+            yield _sse({"type": "done", "segments": count})
+            yield "data: [DONE]\n\n"
+        except RuntimeError as exc:
+            # ffmpeg 解碼失敗等可預期錯誤
+            logger.warning("transcribe-file decode failed [%s]: %s", request_id, exc)
+            yield _sse({"type": "error", "message": "音檔解碼失敗，請確認檔案格式"})
+            yield "data: [DONE]\n\n"
+        except Exception:
+            logger.exception("transcribe-file failed [%s]", request_id)
+            yield _sse({"type": "error", "message": "轉錄失敗，請重試"})
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "X-Request-Id": request_id,
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/health", response_model=None)

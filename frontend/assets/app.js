@@ -31,6 +31,8 @@
   const dom = {
     btnStart: $("btnStart"),
     btnStop: $("btnStop"),
+    btnUpload: $("btnUpload"),
+    uploadAudioInput: $("uploadAudioInput"),
     btnAsk: $("btnAsk"),
     btnClear: $("btnClear"),
     btnDownload: $("btnDownload"),
@@ -93,6 +95,7 @@
     fileTimer: null,         // dev 餵檔模式:送幀 setInterval handle,送完/停止時清掉
     fileCloseWatcher: null,  // dev 餵檔模式:idle watchdog,後端轉完才關 WS
     fileLastActivity: 0,     // dev 餵檔模式:最後一次收到後端訊息的時間戳
+    uploadAbort: null,       // 上傳音檔轉錄中的 AbortController;null = 沒在轉
   };
 
   const RECORD_SAMPLE_RATE = 16000; // 與 AudioWorklet targetSampleRate 一致
@@ -257,12 +260,17 @@ registerProcessor('pcm16-writer', PCM16Writer);
     dom.questionsStat.textContent = count === 0 ? "—" : `${count} 題`;
   }
 
-  function appendTranscriptLine(text) {
+  // atSeconds:上傳音檔批次轉錄時帶入「檔案內的真實時間戳」;
+  // 省略則沿用即時錄音行為(距開始錄音的牆鐘秒數)。
+  function appendTranscriptLine(text, atSeconds) {
     if (!text || !text.trim()) return;
     if (state.transcriptLines.length === 0) {
       dom.transcript.innerHTML = "";
     }
-    const t = Math.floor((Date.now() - state.startEpoch) / 1000);
+    const t =
+      typeof atSeconds === "number" && Number.isFinite(atSeconds)
+        ? Math.max(0, Math.floor(atSeconds))
+        : Math.floor((Date.now() - state.startEpoch) / 1000);
     const idx = state.transcriptLines.length;
     state.transcriptLines.push({ t, text: text.trim() });
     const p = document.createElement("p");
@@ -513,28 +521,42 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
       const body = document.createElement("div");
       body.className = "digest-text";
-      if (d.summary) {
+      if (d.pending) {
+        body.className = "digest-text digest-pending";
+        body.textContent = "摘要產生中…";
+        block.appendChild(body);
+      } else if (d.summary) {
         body.textContent = d.summary;
+        block.appendChild(body);
       } else {
+        // 失敗：顯示佔位 + 重新生成按鈕（只重跑這一段）
         body.className = "digest-text digest-failed";
         body.textContent = "（這段摘要產生失敗）";
+        block.appendChild(body);
+
+        const retry = document.createElement("button");
+        retry.className = "digest-retry";
+        retry.type = "button";
+        retry.textContent = "重新生成";
+        retry.title = "只重跑這一段的摘要";
+        retry.addEventListener("click", () => runDigest(d));
+        block.appendChild(retry);
       }
-      block.appendChild(body);
       dom.digestList.appendChild(block);
     });
   }
 
-  // 把指定行區間 [from, to) 的逐字稿壓成重點，append 進 state.digests。
-  // 失敗不擋主流程，存 summary=null 由 render 顯示佔位。
-  async function appendDigest(from, to) {
-    if (to <= from) return;
+  // 呼叫 /api/digest 填一段摘要；appendDigest 與「重新生成」共用。
+  // 進行中 pending=true 由 render 顯示 loading，成功寫 summary，失敗留 null。
+  async function runDigest(entry) {
+    if (entry.pending) return;
     const text = state.transcriptLines
-      .slice(from, to)
+      .slice(entry.from, entry.to)
       .map((l) => l.text)
       .join(" ");
     if (!text.trim()) return;
-    const entry = { from, to, summary: null };
-    state.digests.push(entry);
+    entry.pending = true;
+    entry.summary = null;
     renderDigests();
     try {
       const resp = await fetch(`${API_BASE}/api/digest`, {
@@ -549,8 +571,23 @@ registerProcessor('pcm16-writer', PCM16Writer);
     } catch (err) {
       console.error("digest failed", err);
     } finally {
+      entry.pending = false;
       renderDigests();
     }
+  }
+
+  // 把指定行區間 [from, to) 的逐字稿壓成重點，append 進 state.digests。
+  // 失敗不擋主流程，存 summary=null 由 render 顯示佔位 + 重試鈕。
+  async function appendDigest(from, to) {
+    if (to <= from) return;
+    const text = state.transcriptLines
+      .slice(from, to)
+      .map((l) => l.text)
+      .join(" ");
+    if (!text.trim()) return;
+    const entry = { from, to, summary: null, pending: false };
+    state.digests.push(entry);
+    await runDigest(entry);
   }
 
   // ─── Chat（SSE streaming）────────────────────────────────────────
@@ -736,6 +773,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.btnStart.disabled = true;
       dom.btnStart.textContent = "錄音中";
       dom.btnClear.disabled = true;
+      if (dom.btnUpload) dom.btnUpload.disabled = true;
       resetClearConfirm();
       if (state.transcriptLines.length === 0) {
         // 全新一段:清空上一場的音訊累積(續錄則接著累積)
@@ -755,6 +793,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.btnStart.disabled = false;
       dom.btnStart.textContent = "錄音";
       dom.btnClear.disabled = false;
+      if (dom.btnUpload) dom.btnUpload.disabled = false;
     }
   }
 
@@ -799,6 +838,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
     dom.btnStart.textContent = "錄音";
     dom.btnStop.disabled = true;
     dom.btnClear.disabled = false;
+    if (dom.btnUpload) dom.btnUpload.disabled = false;
     refreshAskButton();
 
     if (!keepTranscript) doClearTranscript();
@@ -837,6 +877,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (state.isRecording) return;
     setConn("connecting", "解碼音檔中");
     dom.btnStart.disabled = true;
+    if (dom.btnUpload) dom.btnUpload.disabled = true;
     document.body.classList.add("is-recording");
 
     let pcm;
@@ -848,6 +889,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
       setConn("offline", "待機");
       document.body.classList.remove("is-recording");
       dom.btnStart.disabled = false;
+      if (dom.btnUpload) dom.btnUpload.disabled = false;
       return;
     }
 
@@ -943,8 +985,91 @@ registerProcessor('pcm16-writer', PCM16Writer);
     dom.btnStart.textContent = "錄音";
     dom.btnStop.disabled = true;
     dom.btnClear.disabled = false;
+    if (dom.btnUpload) dom.btnUpload.disabled = false;
     refreshAskButton();
     if (!keepTranscript) doClearTranscript();
+  }
+
+  // ─── 上傳音檔:整檔批次轉錄(正式功能) ────────────────────────────
+  // 與 dev 餵檔不同:不模擬即時節奏。音檔原始 bytes 直接 POST 給後端,
+  // 整檔轉錄的 segments 以 SSE 逐段推回,每段帶檔案內真實時間戳寫入
+  // transcriptLines;之後產問/摘要/Chat/儲存鏈路全沿用,跟現場錄的一樣。
+  async function uploadAudioFile(file) {
+    if (state.isRecording || state.uploadAbort) return;
+    const ctrl = new AbortController();
+    state.uploadAbort = ctrl;
+    setConn("connecting", "上傳音檔中");
+    document.body.classList.add("is-recording");
+    dom.btnStart.disabled = true;
+    dom.btnUpload.disabled = true;
+    dom.btnStop.disabled = false;
+    dom.btnClear.disabled = true;
+    resetClearConfirm();
+    let segCount = 0;
+    try {
+      const resp = await fetch(`${API_BASE}/api/transcribe-file`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Filename": encodeURIComponent(file.name || "upload"),
+        },
+        body: file,
+        signal: ctrl.signal,
+      });
+      if (!resp.ok) {
+        let msg = `上傳失敗(HTTP ${resp.status})`;
+        try {
+          const body = await resp.json();
+          if (body && body.error) msg = body.error;
+        } catch (_) { /* 非 JSON 錯誤體,用預設訊息 */ }
+        showError(msg, { persistent: true });
+        return;
+      }
+      setConn("recording", "轉錄中");
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let streamError = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop();
+        for (const ev of events) {
+          const line = ev.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          let obj;
+          try { obj = JSON.parse(payload); } catch (_) { continue; }
+          if (obj.type === "segment" && obj.text) {
+            appendTranscriptLine(obj.text, obj.t);
+            segCount += 1;
+            setConn("recording", `轉錄中 ${segCount} 段`);
+          } else if (obj.type === "error") {
+            streamError = obj.message || "轉錄失敗";
+          }
+        }
+      }
+      if (streamError) showError(streamError, { persistent: true });
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        // 使用者按「停止」中斷:已轉出的段落保留,不當錯誤
+      } else {
+        console.error(err);
+        showError("上傳或轉錄失敗,請檢查後端服務", { persistent: true });
+      }
+    } finally {
+      state.uploadAbort = null;
+      setConn("offline", "待機");
+      document.body.classList.remove("is-recording");
+      dom.btnStart.disabled = false;
+      dom.btnUpload.disabled = false;
+      dom.btnStop.disabled = true;
+      dom.btnClear.disabled = false;
+      refreshAskButton();
+    }
   }
 
   // ─── 生成問題 ────────────────────────────────────────────────────
@@ -1633,10 +1758,22 @@ registerProcessor('pcm16-writer', PCM16Writer);
   // ─── 綁定 ────────────────────────────────────────────────────────
   dom.btnStart.addEventListener("click", startRecording);
   dom.btnStop.addEventListener("click", () => {
-    // 餵檔模式用 fileTimer 區分;一般錄音才匯出 WAV
+    // 上傳轉錄中 → 中斷 fetch(已轉出段落保留);餵檔模式用 fileTimer 區分;
+    // 一般錄音才匯出 WAV
+    if (state.uploadAbort) { state.uploadAbort.abort(); return; }
     if (state.fileTimer) stopFilePlayback({ keepTranscript: true });
     else stopRecording({ keepTranscript: true, exportAudio: true });
   });
+
+  // 上傳音檔 → 整檔批次轉錄
+  if (dom.btnUpload && dom.uploadAudioInput) {
+    dom.btnUpload.addEventListener("click", () => dom.uploadAudioInput.click());
+    dom.uploadAudioInput.addEventListener("change", () => {
+      const f = dom.uploadAudioInput.files && dom.uploadAudioInput.files[0];
+      if (f) uploadAudioFile(f);
+      dom.uploadAudioInput.value = "";
+    });
+  }
 
   // ─── DEV 餵檔入口:?devaudio=1 或 Alt+D 顯示一顆按鈕 ──────────────
   (function setupDevAudio() {

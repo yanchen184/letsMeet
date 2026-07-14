@@ -17,6 +17,7 @@
 ## 特色
 
 - **即時逐字稿**:WebSocket 串流 PCM16 音訊,faster-whisper 在 server 端轉錄並即時推回前端
+- **上傳音檔分析**:沒現場錄到也能把既有錄音檔(WAV/MP3/M4A/…)整檔丟上來,後端批次轉錄後以帶「檔內真實時間戳」的逐字稿串流回填,照樣走產問 / 摘要 / 問 AI / 儲存的同一套分析鏈路
 - **AI 追問**:把累積逐字稿丟給任何 OpenAI-compatible LLM(預設接內網自架 Breeze2,可換 OpenAI/Ollama/LM Studio)
 - **即時 Chat**:邊開會邊跟 AI 來回對談 — 問「對方剛剛對交期怎麼說」、討論「接下來該追問什麼」,回覆 SSE streaming 逐字浮現,對話只存前端記憶體
 - **重點摘要折疊**:每次產問順手把該批新發言壓成條列重點,主畫面只看摘要、原文預設折疊,需要核對時再展開
@@ -102,6 +103,20 @@ Server 回:
 - `{"type":"transcription","text":"..."}` — 一段逐字稿
 - `{"type":"error","message":"..."}` — 錯誤
 
+### `POST /api/transcribe-file`
+
+上傳既有錄音檔整檔批次轉錄。請求 body 為**原始音檔 bytes**(`Content-Type: application/octet-stream`,不走 multipart,免 python-multipart 依賴),可帶 `X-Filename` header(URL-encoded,僅記 log)。faster-whisper 後端會逐段串流(帶檔內真實時間戳);whisper.cpp / transformers 後端無法逐段串流,則以 ffmpeg 轉 16k mono WAV 後一次轉錄回單段(`t=0`)。
+
+回應為 **SSE**(`text/event-stream`):
+- `{"type":"segment","t":0.0,"end":2.84,"text":"..."}` — 一段逐字稿(`t`/`end` 為秒)
+- `{"type":"done","segments":12}` — 全部轉完,附段數
+- `{"type":"error","message":"..."}` — 轉錄 / 解碼失敗
+- 結尾一律送 `data: [DONE]`
+
+錯誤碼:
+- `422` — body 為空
+- `413` — 超過 `UPLOAD_MAX_BYTES`(預設 200MB;nginx `client_max_body_size` 已一併對齊)
+
 ### `POST /api/questions`
 
 ```json
@@ -149,6 +164,8 @@ Server 回:
 ```
 
 錯誤碼:`422`(transcript 為空)/ `502`(LLM HTTP 錯誤)/ `504`(LLM 超時)。
+
+> 前端對每段摘要各自呼叫一次。某段失敗時該段顯示「(這段摘要產生失敗)」+「重新生成」按鈕,點了只重跑那一段(不影響已成功的其他段)。
 
 ### `POST /api/chat`
 

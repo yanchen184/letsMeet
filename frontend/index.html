@@ -33,6 +33,14 @@
         <span aria-hidden="true">■</span>
         停止
       </button>
+      <button id="btnUpload" class="btn rail-action" type="button"
+              title="上傳既有錄音檔(WAV/MP3/M4A…),整檔轉錄成逐字稿後照樣產問分析">
+        <span aria-hidden="true">⇪</span>
+        上傳音檔
+      </button>
+      <input id="uploadAudioInput" type="file"
+             accept="audio/*,video/mp4,video/webm,.wav,.mp3,.m4a,.aac,.ogg,.opus,.webm,.mp4,.flac"
+             hidden />
       <button id="btnAsk" class="btn rail-action" type="button" disabled
               title="逐字稿至少要 3 行才能產出有意義的問題">
         <span aria-hidden="true">✦</span>

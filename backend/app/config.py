@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     # 傳輸限制
     MAX_CHUNK_SIZE: int = 5 * 1024 * 1024  # 5 MB
+    # 上傳音檔批次轉錄的大小上限（nginx client_max_body_size 需一併 ≥ 此值）
+    UPLOAD_MAX_BYTES: int = 200 * 1024 * 1024  # 200 MB
     # CORS_ORIGINS 在 .env 以逗號分隔字串設定，由 _split_cors validator 轉為 list
     CORS_ORIGINS: str | list[str] = ["http://localhost:3000", "http://localhost:8081"]
     DEFAULT_LANGUAGE: str = "zh"
@@ -85,6 +87,7 @@ COMPUTE_TYPE = settings.COMPUTE_TYPE
 STREAM_MODEL = settings.STREAM_MODEL
 ASR_BACKEND = settings.ASR_BACKEND
 MAX_CHUNK_SIZE = settings.MAX_CHUNK_SIZE
+UPLOAD_MAX_BYTES = settings.UPLOAD_MAX_BYTES
 CORS_ORIGINS = settings.CORS_ORIGINS
 DEFAULT_LANGUAGE = settings.DEFAULT_LANGUAGE
 

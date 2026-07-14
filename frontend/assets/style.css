@@ -1408,9 +1408,27 @@ body.is-recording .btn.primary::before {
   line-height: 1.55;
 }
 
-.digest-text.digest-failed {
+.digest-text.digest-failed,
+.digest-text.digest-pending {
   color: var(--muted);
   font-style: italic;
+}
+
+.digest-retry {
+  margin-top: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.digest-retry:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 /* 完整逐字稿折疊 */
