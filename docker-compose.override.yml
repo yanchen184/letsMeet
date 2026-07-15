@@ -1,0 +1,19 @@
+# wez（DGX Spark, GB10）專用 GPU override：docker compose 會自動與
+# docker-compose.yml 合併。backend 改走 Dockerfile.gpu（本機 image
+# ctranslate2-cuda-arm64:test，只存在於 wez）＋ 掛 GPU。
+# 非 GPU 機器要跑：把本檔移走或 `docker compose -f docker-compose.yml up`。
+#
+# 實測（170.6s 音檔, Breeze-ASR-25-ct2, GB10）：
+#   cpu int8            RTF 2.85
+#   cuda float16 beam5  RTF 1.06（f16 GEMM 在 GB10 慢）
+#   cuda int8_float16 beam5+vad  RTF 0.346  ← 採用：品質同 beam5、達標 <0.5
+#   cuda int8_float16 beam1+vad  RTF 0.135（備選：再快 2.5 倍、品質略降）
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    environment:
+      - DEVICE=cuda
+      - COMPUTE_TYPE=int8_float16
+    gpus: all

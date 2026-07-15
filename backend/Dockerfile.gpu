@@ -1,0 +1,51 @@
+# GPU 版 backend：基於 wez 上 source-build 的 ctranslate2 CUDA image
+# （nvidia/cuda:12.8.1-cudnn + ct2 4.7.1 GPU 版，python 3.10，僅存在於 wez 本機，
+#   其他機器 build 會失敗 → 走預設 Dockerfile 的 CPU 版即可）。
+# 搭配 docker-compose.override.yml 的 gpus/DEVICE=cuda 使用。
+FROM ctranslate2-cuda-arm64:test
+
+# 關鍵：image 內建 /usr/local/cuda/compat 是 570 compat driver，
+# 會遮蔽 host 注入的 580 driver 導致 cuda 初始化失敗，LD path 必須排除 compat。
+ENV LD_LIBRARY_PATH=/opt/ctranslate2/lib:/usr/local/cuda/lib64
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash appuser
+
+WORKDIR /app
+
+# ctranslate2 4.7.1 已在 image 內 pip 註冊，faster-whisper 的相依會直接滿足，
+# 不會被 PyPI 的 CPU-only aarch64 wheel 蓋掉。
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/ app/
+COPY data/ data/
+
+RUN mkdir -p /home/appuser/.cache/huggingface \
+    && chown -R appuser:appuser /home/appuser/.cache \
+    && chown -R appuser:appuser /app \
+    && mkdir -p /data \
+    && chown appuser:appuser /data
+
+USER appuser
+
+ENV HF_HOME=/home/appuser/.cache/huggingface
+
+# Build 時預載 Whisper 模型,部署不需要網路、冷啟動秒開
+ARG STREAM_MODEL=phate334/Breeze-ASR-25-ct2
+ARG HF_TOKEN
+ENV STREAM_MODEL=${STREAM_MODEL} \
+    HF_TOKEN=${HF_TOKEN}
+
+RUN python3 - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+token = os.environ.get("HF_TOKEN") or None
+snapshot_download(os.environ["STREAM_MODEL"], token=token)
+PY
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
