@@ -111,6 +111,8 @@
     meetingDurationSec: 0,   // 這場會議時長(結束時定格,供會議記錄用)
     savedMeetingId: null,    // 這場已歸檔的會議 id;有值則後續存檔/修訂走更新不開新筆
     savedMeetingPin: null,   // 歸檔時設的 PIN,更新同一筆時要帶回驗證
+    historySearchTimer: null,// 歷史庫搜尋 debounce handle
+    historySearchSeq: 0,     // 搜尋序號,丟棄過期回應(打字快時避免舊結果蓋新結果)
   };
 
   const RECORD_SAMPLE_RATE = 16000; // 與 AudioWorklet targetSampleRate 一致
@@ -1954,6 +1956,13 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
       li.appendChild(titleEl);
       li.appendChild(metaEl);
+      // 全文搜尋回的命中片段：[ ] 標記命中處,渲染成 <mark> 高亮
+      if (m.snippet) {
+        const snipEl = document.createElement("div");
+        snipEl.className = "history-list__snippet";
+        appendSnippet(snipEl, m.snippet);
+        li.appendChild(snipEl);
+      }
       const isProtected = !!(m.is_protected || m.pin_protected);
       if (isProtected) {
         const lockEl = document.createElement("span");
@@ -1976,6 +1985,65 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
       listEl.appendChild(li);
     });
+  }
+
+  // 把後端 FTS snippet(命中處用 [ ] 包住)安全渲染進 container:
+  // 逐段拆解、命中片段包成 <mark>,其餘用 textContent,避免任何 HTML 注入。
+  function appendSnippet(container, snippet) {
+    const text = String(snippet || "");
+    let i = 0;
+    while (i < text.length) {
+      const open = text.indexOf("[", i);
+      if (open === -1) {
+        container.appendChild(document.createTextNode(text.slice(i)));
+        break;
+      }
+      if (open > i) {
+        container.appendChild(document.createTextNode(text.slice(i, open)));
+      }
+      const close = text.indexOf("]", open + 1);
+      if (close === -1) {
+        // 沒有對應的 ] → 剩下的當純文字
+        container.appendChild(document.createTextNode(text.slice(open)));
+        break;
+      }
+      const mark = document.createElement("mark");
+      mark.className = "history-list__hit";
+      mark.textContent = text.slice(open + 1, close);
+      container.appendChild(mark);
+      i = close + 1;
+    }
+  }
+
+  // 打後端 FTS 全文搜尋。用 historySearchSeq 丟棄過期回應(打字快時舊結果別蓋新的)。
+  async function runHistorySearch(q) {
+    const modal = $("historyModal");
+    if (!modal) return;
+    const listEl = modal.querySelector(".history-list");
+    if (!listEl) return;
+
+    const seq = ++state.historySearchSeq;
+    listEl.innerHTML = "";
+    const loadingLi = document.createElement("li");
+    loadingLi.className = "history-list__loading";
+    loadingLi.textContent = "搜尋中…";
+    listEl.appendChild(loadingLi);
+
+    try {
+      const url = `${API_BASE}/api/meetings/search?q=${encodeURIComponent(q)}&limit=50`;
+      const resp = await fetch(url);
+      if (seq !== state.historySearchSeq) return; // 過期回應,丟棄
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      renderHistoryList(data.meetings || [], modal);
+    } catch (err) {
+      if (seq !== state.historySearchSeq) return;
+      listEl.innerHTML = "";
+      const errLi = document.createElement("li");
+      errLi.className = "history-list__error";
+      errLi.textContent = `搜尋失敗:${err.message || err}`;
+      listEl.appendChild(errLi);
+    }
   }
 
   // 受保護會議：先在 detailView 顯示 PIN 輸入，驗證通過才載入內容。
@@ -2287,15 +2355,18 @@ registerProcessor('pcm16-writer', PCM16Writer);
     historyModalEl.addEventListener("click", (ev) => {
       if (ev.target === historyModalEl) closeHistoryModal();
     });
-    // 過濾輸入
+    // 搜尋輸入：打後端 FTS 全文搜尋（跨標題/摘要/逐字稿/會議記錄/追問），debounce 250ms。
+    // 空字串 → 回全部列表。
     const filterInput = historyModalEl.querySelector(".history-filter");
     if (filterInput) {
       filterInput.addEventListener("input", () => {
-        const q = filterInput.value.toLowerCase();
-        const filtered = q
-          ? _historyAllMeetings.filter((m) => (m.title || "").toLowerCase().includes(q))
-          : _historyAllMeetings;
-        renderHistoryList(filtered, historyModalEl);
+        const q = filterInput.value.trim();
+        clearTimeout(state.historySearchTimer);
+        if (!q) {
+          renderHistoryList(_historyAllMeetings, historyModalEl);
+          return;
+        }
+        state.historySearchTimer = setTimeout(() => runHistorySearch(q), 250);
       });
     }
   }

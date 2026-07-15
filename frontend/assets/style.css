@@ -1806,6 +1806,21 @@ body.is-finalized .transcript {
   color: var(--muted);
 }
 
+.history-list__snippet {
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #475569;
+  overflow-wrap: anywhere;
+}
+
+.history-list__hit {
+  background: #fef08a;
+  color: #713f12;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
 .history-list__loading,
 .history-list__empty,
 .history-list__error {

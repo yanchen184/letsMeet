@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>letsMeet</title>
-  <link rel="stylesheet" href="assets/style.css?v=arch1" />
+  <link rel="stylesheet" href="assets/style.css?v=search1" />
 </head>
 <body>
   <header class="bar">
     <div class="bar-inner">
       <span class="logo">letsMeet</span>
-      <span class="app-version" title="版本">v1.3.0</span>
+      <span class="app-version" title="版本">v1.4.0</span>
       <div class="session-meter" aria-label="會議狀態">
         <span id="connState" class="badge offline">待機</span>
         <span id="elapsed" class="elapsed" aria-label="已錄時間">00:00:00</span>
@@ -207,7 +207,7 @@
             <h2>歷史會議</h2>
             <p>受保護的會議需要 PIN 才能查看內容</p>
           </div>
-          <input class="history-filter" type="text" placeholder="搜尋會議標題或擁有者" />
+          <input class="history-filter" type="text" placeholder="全文搜尋：標題、摘要、逐字稿、會議記錄、追問" />
           <ul class="history-list"></ul>
         </div>
         <div class="history-modal__detailView" hidden></div>
@@ -318,6 +318,6 @@
     </span>
   </footer>
 
-  <script src="assets/app.js?v=arch1"></script>
+  <script src="assets/app.js?v=search1"></script>
 </body>
 </html>

@@ -400,6 +400,22 @@ async def list_meetings_endpoint(owner: str | None = None) -> JSONResponse:
     return JSONResponse({"meetings": rows}, headers={"X-Request-Id": request_id})
 
 
+@router.get("/meetings/search", response_model=None)
+async def search_meetings_endpoint(q: str = "", limit: int = 50) -> JSONResponse:
+    """全文搜尋會議庫（跨標題/摘要/逐字稿/會議記錄/追問）。
+
+    須放在 /meetings/{meeting_id} 之前，否則 "search" 會被當成 id 解析。
+    受 PIN 保護的場不回 snippet 內文，只回 meta（詳情頁仍須驗 PIN）。
+    """
+    request_id = uuid.uuid4().hex
+    limit = max(1, min(limit, 100))
+    rows = db.search_meetings(DB_PATH, q, limit=limit)
+    return JSONResponse(
+        {"meetings": rows, "query": q},
+        headers={"X-Request-Id": request_id},
+    )
+
+
 @router.get("/meetings/{meeting_id}", response_model=None)
 async def get_meeting_endpoint(meeting_id: int, pin: str | None = None) -> JSONResponse:
     """單場會議完整內容。設了 PIN 的場次需帶 ?pin= 比對，缺/錯回 401。"""
