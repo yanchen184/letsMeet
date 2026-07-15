@@ -32,12 +32,14 @@ class TestBuildChatMessages:
             context_hint="我是乙方 PM",
             asked_questions=["驗收標準是？"],
         )
+        # 只能有一則 system（線上 LLM 的 chat template 遇到兩則 system 直接 500）
+        assert [m["role"] for m in msgs].count("system") == 1
         assert msgs[0]["role"] == "system"
-        assert msgs[0]["content"] == CHAT_SYSTEM_PROMPT
-        # 第二則 system 帶脈絡
-        assert "甲方說月底要交" in msgs[1]["content"]
-        assert "我是乙方 PM" in msgs[1]["content"]
-        assert "驗收標準是？" in msgs[1]["content"]
+        assert msgs[0]["content"].startswith(CHAT_SYSTEM_PROMPT)
+        # 脈絡併在同一則 system 內
+        assert "甲方說月底要交" in msgs[0]["content"]
+        assert "我是乙方 PM" in msgs[0]["content"]
+        assert "驗收標準是？" in msgs[0]["content"]
         # 對話歷史接在後面
         assert msgs[-1] == {"role": "user", "content": "對方對交期怎麼說？"}
 
@@ -56,7 +58,7 @@ class TestBuildChatMessages:
 
     def test_empty_context_uses_placeholders(self) -> None:
         msgs = build_chat_messages([{"role": "user", "content": "嗨"}])
-        ctx = msgs[1]["content"]
+        ctx = msgs[0]["content"]
         assert "（目前還沒有逐字稿）" in ctx
         assert "（未提供）" in ctx
         assert "（尚未產生）" in ctx

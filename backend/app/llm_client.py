@@ -359,7 +359,8 @@ def build_chat_messages(
 ) -> list[dict[str, str]]:
     """把脈絡（逐字稿／背景／已產問）+ 對話歷史組成 chat messages。
 
-    脈絡塞成一則 system 之後的 user 開場，再接前端帶來的對話歷史。
+    脈絡併進「唯一一則 system」再接對話歷史 —— 線上 LLM（Breeze2 chat template）
+    遇到兩則 system 會直接 500，system 只能有一則。
     """
     asked_clean = [q.strip() for q in (asked_questions or []) if q and q.strip()]
     context_block = CHAT_CONTEXT_TEMPLATE.format(
@@ -368,8 +369,7 @@ def build_chat_messages(
         asked="\n".join(f"- {q}" for q in asked_clean) if asked_clean else "（尚未產生）",
     )
     out: list[dict[str, str]] = [
-        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
-        {"role": "system", "content": context_block},
+        {"role": "system", "content": f"{CHAT_SYSTEM_PROMPT}\n\n{context_block}"},
     ]
     for m in messages:
         role = m.get("role")
