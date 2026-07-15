@@ -843,9 +843,13 @@ registerProcessor('pcm16-writer', PCM16Writer);
     state.audioSource = null;
     state.audioProc = null;
 
-    // 定格會議時長（供會議記錄用），startEpoch 為 0 表示沒真的錄過
+    // 定格會議時長（供會議記錄用）。上傳音檔沒有 startEpoch，
+    // 退而用最後一行逐字稿的檔內時間戳當時長。
     if (state.startEpoch) {
       state.meetingDurationSec = Math.floor((Date.now() - state.startEpoch) / 1000);
+    } else if (state.transcriptLines.length > 0) {
+      const last = state.transcriptLines[state.transcriptLines.length - 1];
+      if (last && Number.isFinite(last.t)) state.meetingDurationSec = last.t;
     }
     stopElapsed();
     setConn("offline", "待機");
@@ -1079,6 +1083,13 @@ registerProcessor('pcm16-writer', PCM16Writer);
       }
     } finally {
       state.uploadAbort = null;
+      // 上傳路徑沒有 startEpoch:用最後一行逐字稿的檔內時間戳定格會議時長
+      if (state.transcriptLines.length > 0) {
+        const last = state.transcriptLines[state.transcriptLines.length - 1];
+        if (last && Number.isFinite(last.t) && last.t > 0) {
+          state.meetingDurationSec = last.t;
+        }
+      }
       setConn("offline", "待機");
       document.body.classList.remove("is-recording");
       dom.btnStart.disabled = false;
@@ -1086,6 +1097,11 @@ registerProcessor('pcm16-writer', PCM16Writer);
       dom.btnStop.disabled = true;
       dom.btnClear.disabled = false;
       refreshAskButton();
+      // 上傳轉錄完成後自動跑 AI 收尾（會議記錄），跟錄音按「停止」的行為對稱。
+      // segCount > 0:這次上傳真的有轉出段落才收尾，避免上傳失敗時拿舊逐字稿重跑。
+      if (segCount > 0 && state.transcriptLines.length > 0) {
+        setTimeout(() => finalizeMeeting(), 800);
+      }
     }
   }
 
