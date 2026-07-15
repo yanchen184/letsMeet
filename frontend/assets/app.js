@@ -1479,6 +1479,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         setMinutesStat(`已完成・歸檔 #${state.savedMeetingId} 已更新`);
+        extractActionItems(state.savedMeetingId);
       } else {
         const title = await generateArchiveTitle();
         const owner = localStorage.getItem(LS_OWNER_KEY) || "未署名";
@@ -1496,11 +1497,33 @@ registerProcessor('pcm16-writer', PCM16Writer);
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
         state.savedMeetingId = data.id;
         setMinutesStat(`已完成・已自動歸檔 #${data.id}`);
+        extractActionItems(data.id);
       }
     } catch (err) {
       console.error("auto archive failed", err);
       setMinutesStat("已完成・自動歸檔失敗,可按「儲存會議」手動存");
     }
+  }
+
+  // 歸檔後非阻塞抽待辦：從逐字稿抽結構化待辦寫進該會議（失敗只記 log，不擋主流程）。
+  function extractActionItems(meetingId) {
+    const transcript = getFullTranscript();
+    if (!transcript.trim()) return;
+    fetch(`${API_BASE}/api/meetings/${meetingId}/action-items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transcript,
+        context: buildContext(),
+        pin: state.savedMeetingPin || null,
+      }),
+    })
+      .then((r) => r.json().catch(() => ({})))
+      .then((d) => {
+        const n = (d.action_items || []).length;
+        if (n > 0) console.info(`已抽出 ${n} 筆待辦 → 會議 #${meetingId}`);
+      })
+      .catch((err) => console.error("extract action items failed", err));
   }
 
   async function generateArchiveTitle() {
@@ -1885,6 +1908,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
     // 重置標題過濾,避免重開時輸入框殘留舊文字與未過濾列表不一致
     const filterInput = modal.querySelector(".history-filter");
     if (filterInput) filterInput.value = "";
+    // 重置分頁回「會議列表」
+    switchHistoryTab("meetings", modal);
   }
 
   async function loadHistoryList() {
@@ -2043,6 +2068,112 @@ registerProcessor('pcm16-writer', PCM16Writer);
       errLi.className = "history-list__error";
       errLi.textContent = `搜尋失敗:${err.message || err}`;
       listEl.appendChild(errLi);
+    }
+  }
+
+  // ─── 待辦追蹤看板（跨會議未結）─────────────────────────────────────
+  function switchHistoryTab(tab, modal) {
+    if (!modal) modal = $("historyModal");
+    if (!modal) return;
+    modal.querySelectorAll(".history-tab").forEach((btn) => {
+      const active = btn.dataset.tab === tab;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    modal.querySelectorAll(".history-tabpanel").forEach((p) => {
+      p.hidden = p.dataset.panel !== tab;
+    });
+    if (tab === "actions") loadActionBoard(modal);
+  }
+
+  async function loadActionBoard(modal) {
+    if (!modal) modal = $("historyModal");
+    if (!modal) return;
+    const listEl = modal.querySelector(".history-actions");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    const loadingLi = document.createElement("li");
+    loadingLi.className = "history-list__loading";
+    loadingLi.textContent = "載入中…";
+    listEl.appendChild(loadingLi);
+    try {
+      const resp = await fetch(`${API_BASE}/api/action-items?status=open`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      renderActionBoard(data.action_items || [], modal);
+    } catch (err) {
+      listEl.innerHTML = "";
+      const errLi = document.createElement("li");
+      errLi.className = "history-list__error";
+      errLi.textContent = `載入失敗:${err.message || err}`;
+      listEl.appendChild(errLi);
+    }
+  }
+
+  function renderActionBoard(items, modal) {
+    const listEl = modal.querySelector(".history-actions");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    if (items.length === 0) {
+      const emptyLi = document.createElement("li");
+      emptyLi.className = "history-list__empty";
+      emptyLi.textContent = "目前沒有未結待辦 🎉";
+      listEl.appendChild(emptyLi);
+      return;
+    }
+    items.forEach((it) => {
+      const li = document.createElement("li");
+      li.className = "action-item";
+
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.className = "action-item__check";
+      chk.title = "打勾結案";
+      chk.addEventListener("change", () => closeActionItem(it.id, li, chk, modal));
+
+      const body = document.createElement("div");
+      body.className = "action-item__body";
+
+      const taskEl = document.createElement("div");
+      taskEl.className = "action-item__task";
+      const tags = [];
+      if (it.assignee) tags.push(`[${it.assignee}]`);
+      tags.push(it.task);
+      if (it.due) tags.push(`（${it.due}）`);
+      taskEl.textContent = tags.join(" ");
+
+      const metaEl = document.createElement("div");
+      metaEl.className = "action-item__meta";
+      metaEl.textContent = `來自：${it.meeting_title || "會議 #" + it.meeting_id}`;
+
+      body.appendChild(taskEl);
+      body.appendChild(metaEl);
+      li.appendChild(chk);
+      li.appendChild(body);
+      listEl.appendChild(li);
+    });
+  }
+
+  async function closeActionItem(itemId, li, chk, modal) {
+    chk.disabled = true;
+    try {
+      const resp = await fetch(`${API_BASE}/api/action-items/${itemId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "done" }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      // 淡出移除,若清空則顯示空狀態
+      li.classList.add("action-item--done");
+      setTimeout(() => {
+        li.remove();
+        const listEl = modal.querySelector(".history-actions");
+        if (listEl && listEl.children.length === 0) renderActionBoard([], modal);
+      }, 350);
+    } catch (err) {
+      console.error("close action item failed", err);
+      chk.checked = false;
+      chk.disabled = false;
     }
   }
 
@@ -2369,6 +2500,10 @@ registerProcessor('pcm16-writer', PCM16Writer);
         state.historySearchTimer = setTimeout(() => runHistorySearch(q), 250);
       });
     }
+    // 分頁切換：會議列表 / 待辦追蹤
+    historyModalEl.querySelectorAll(".history-tab").forEach((btn) => {
+      btn.addEventListener("click", () => switchHistoryTab(btn.dataset.tab, historyModalEl));
+    });
   }
 
   // 自動產問開關

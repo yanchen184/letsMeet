@@ -43,6 +43,7 @@ from app.config import (
 from app.llm_client import (
     LLMOutputFormatError,
     build_chat_messages,
+    extract_action_items,
     generate_minutes,
     generate_questions,
     generate_title,
@@ -390,6 +391,105 @@ async def update_meeting_endpoint(meeting_id: int, req: MeetingUpdateRequest) ->
         db.update_meeting(DB_PATH, meeting_id, **updates)
     logger.info("meeting updated [%s] id=%d fields=%s", request_id, meeting_id, sorted(updates))
     return JSONResponse({"id": meeting_id}, headers={"X-Request-Id": request_id})
+
+
+# ── 結構化待辦（跨會議追蹤）─────────────────────────────────────────────────
+
+class ActionExtractRequest(BaseModel):
+    """從逐字稿抽待辦寫入某會議。pin 是該場有設 PIN 時的驗證。"""
+
+    transcript: str = Field(..., description="整場逐字稿")
+    context: str | None = Field(default=None, description="會議背景")
+    pin: str | None = Field(default=None, description="該場已設 PIN 時必帶")
+
+
+@router.post("/meetings/{meeting_id}/action-items", response_model=None)
+async def extract_action_items_endpoint(
+    meeting_id: int, req: ActionExtractRequest
+) -> JSONResponse:
+    """從逐字稿抽出結構化待辦，覆寫存進該會議（供歸檔後補待辦）。"""
+    request_id = uuid.uuid4().hex
+    meeting = db.get_meeting(DB_PATH, meeting_id)
+    if meeting is None:
+        return JSONResponse(
+            {"error": "找不到該場會議"},
+            status_code=404,
+            headers={"X-Request-Id": request_id},
+        )
+    stored_pin = meeting.get("pin_code")
+    if stored_pin and (req.pin or "").strip() != stored_pin:
+        return JSONResponse(
+            {"error": "PIN 錯誤或未提供", "pin_required": True},
+            status_code=401,
+            headers={"X-Request-Id": request_id},
+        )
+    items = await extract_action_items(req.transcript, req.context)
+    saved = db.replace_action_items(DB_PATH, meeting_id, items)
+    logger.info(
+        "action items extracted [%s] meeting=%d n=%d",
+        request_id, meeting_id, len(saved),
+    )
+    return JSONResponse(
+        {"meeting_id": meeting_id, "action_items": saved},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@router.get("/meetings/{meeting_id}/action-items", response_model=None)
+async def list_meeting_action_items_endpoint(meeting_id: int) -> JSONResponse:
+    """單場會議的待辦（meta，不受 PIN 影響——只回 task 文字，不含逐字稿）。"""
+    request_id = uuid.uuid4().hex
+    items = db.list_action_items_for_meeting(DB_PATH, meeting_id)
+    return JSONResponse(
+        {"meeting_id": meeting_id, "action_items": items},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@router.get("/action-items", response_model=None)
+async def list_open_action_items_endpoint(status: str = "open") -> JSONResponse:
+    """跨會議待辦追蹤看板。目前只支援 status=open（未結）。"""
+    request_id = uuid.uuid4().hex
+    if status != "open":
+        return JSONResponse(
+            {"error": "目前只支援 status=open"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    items = db.list_open_action_items(DB_PATH)
+    return JSONResponse(
+        {"action_items": items, "status": status},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+class ActionStatusRequest(BaseModel):
+    status: str = Field(..., description="open 或 done")
+
+
+@router.patch("/action-items/{item_id}", response_model=None)
+async def update_action_item_endpoint(
+    item_id: int, req: ActionStatusRequest
+) -> JSONResponse:
+    """改單筆待辦狀態（打勾結案 / 重開）。"""
+    request_id = uuid.uuid4().hex
+    if req.status not in ("open", "done"):
+        return JSONResponse(
+            {"error": "status 須為 open 或 done"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    ok = db.update_action_item_status(DB_PATH, item_id, req.status)
+    if not ok:
+        return JSONResponse(
+            {"error": "找不到該待辦"},
+            status_code=404,
+            headers={"X-Request-Id": request_id},
+        )
+    return JSONResponse(
+        {"id": item_id, "status": req.status},
+        headers={"X-Request-Id": request_id},
+    )
 
 
 @router.get("/meetings", response_model=None)

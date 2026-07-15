@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>letsMeet</title>
-  <link rel="stylesheet" href="assets/style.css?v=search1" />
+  <link rel="stylesheet" href="assets/style.css?v=todo1" />
 </head>
 <body>
   <header class="bar">
     <div class="bar-inner">
       <span class="logo">letsMeet</span>
-      <span class="app-version" title="版本">v1.4.0</span>
+      <span class="app-version" title="版本">v1.5.0</span>
       <div class="session-meter" aria-label="會議狀態">
         <span id="connState" class="badge offline">待機</span>
         <span id="elapsed" class="elapsed" aria-label="已錄時間">00:00:00</span>
@@ -207,8 +207,18 @@
             <h2>歷史會議</h2>
             <p>受保護的會議需要 PIN 才能查看內容</p>
           </div>
-          <input class="history-filter" type="text" placeholder="全文搜尋：標題、摘要、逐字稿、會議記錄、追問" />
-          <ul class="history-list"></ul>
+          <div class="history-tabs" role="tablist">
+            <button class="history-tab is-active" type="button" data-tab="meetings" role="tab" aria-selected="true">會議列表</button>
+            <button class="history-tab" type="button" data-tab="actions" role="tab" aria-selected="false">待辦追蹤</button>
+          </div>
+          <div class="history-tabpanel" data-panel="meetings">
+            <input class="history-filter" type="text" placeholder="全文搜尋：標題、摘要、逐字稿、會議記錄、追問" />
+            <ul class="history-list"></ul>
+          </div>
+          <div class="history-tabpanel" data-panel="actions" hidden>
+            <p class="history-actions__hint">所有會議尚未完成的待辦，打勾即結案。</p>
+            <ul class="history-actions"></ul>
+          </div>
         </div>
         <div class="history-modal__detailView" hidden></div>
       </div>
@@ -318,6 +328,6 @@
     </span>
   </footer>
 
-  <script src="assets/app.js?v=search1"></script>
+  <script src="assets/app.js?v=todo1"></script>
 </body>
 </html>

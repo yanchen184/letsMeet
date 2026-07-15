@@ -34,6 +34,25 @@ def init_db(path: str) -> None:
             "transcript TEXT, questions TEXT, "
             "FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE)"
         )
+        # 結構化待辦：從會議記錄抽出的待辦事項，可跨會議聚合追蹤。
+        # status: open（未結）/ done（已完成）。source 會議刪除時一併清掉。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS action_items ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "meeting_id INTEGER NOT NULL, "
+            "assignee TEXT, task TEXT NOT NULL, due TEXT, "
+            "status TEXT NOT NULL DEFAULT 'open', "
+            "created_at TEXT NOT NULL, "
+            "FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_action_items_status "
+            "ON action_items(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_action_items_meeting "
+            "ON action_items(meeting_id)"
+        )
         _ensure_column(conn, "meetings", "pin_code", "TEXT")
         _ensure_column(conn, "meeting_contents", "minutes", "TEXT")
         # 全文搜尋：FTS5 + trigram tokenizer（中文子字串比對可靠，unicode61 對 CJK 不斷詞）。
@@ -333,3 +352,78 @@ def get_meeting(path: str, meeting_id: int) -> dict | None:
     d = dict(row)
     d["questions"] = json.loads(d["questions"]) if d["questions"] else []
     return d
+
+
+# ── 結構化待辦（action items）───────────────────────────────────────────────
+
+def replace_action_items(
+    path: str, meeting_id: int, items: list[dict]
+) -> list[dict]:
+    """以整組覆寫某會議的待辦（先刪後插，冪等）。回寫入後的完整列（含 id）。
+
+    items 每筆：{assignee?, task, due?}。task 為空的略過。已標 done 的舊項會一併
+    被清掉——覆寫語意用於「產/重產會議記錄」時同步待辦，呼叫端自行決定時機。
+    """
+    created_at = datetime.now(timezone.utc).isoformat()
+    clean = [
+        it for it in (items or [])
+        if isinstance(it, dict) and str(it.get("task", "")).strip()
+    ]
+    with closing(_connect(path)) as conn:
+        conn.execute(
+            "DELETE FROM action_items WHERE meeting_id = ?", (meeting_id,)
+        )
+        for it in clean:
+            conn.execute(
+                "INSERT INTO action_items "
+                "(meeting_id, assignee, task, due, status, created_at) "
+                "VALUES (?, ?, ?, ?, 'open', ?)",
+                (
+                    meeting_id,
+                    (str(it.get("assignee", "")).strip() or None),
+                    str(it["task"]).strip(),
+                    (str(it.get("due", "")).strip() or None),
+                    created_at,
+                ),
+            )
+        conn.commit()
+    return list_action_items_for_meeting(path, meeting_id)
+
+
+def list_action_items_for_meeting(path: str, meeting_id: int) -> list[dict]:
+    """單場會議的待辦（依 id）。"""
+    with closing(_connect(path)) as conn:
+        rows = conn.execute(
+            "SELECT id, meeting_id, assignee, task, due, status, created_at "
+            "FROM action_items WHERE meeting_id = ? ORDER BY id",
+            (meeting_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_open_action_items(path: str, limit: int = 200) -> list[dict]:
+    """跨會議所有未結待辦，附來源會議標題/日期，供追蹤看板。"""
+    with closing(_connect(path)) as conn:
+        rows = conn.execute(
+            "SELECT a.id, a.meeting_id, a.assignee, a.task, a.due, a.status, "
+            "a.created_at, m.title AS meeting_title, m.created_at AS meeting_created_at "
+            "FROM action_items a JOIN meetings m ON m.id = a.meeting_id "
+            "WHERE a.status = 'open' "
+            "ORDER BY m.created_at DESC, a.id "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_action_item_status(path: str, item_id: int, status: str) -> bool:
+    """改單筆待辦狀態（open/done）。不存在回 False。"""
+    if status not in ("open", "done"):
+        raise ValueError(f"invalid status: {status!r}")
+    with closing(_connect(path)) as conn:
+        cur = conn.execute(
+            "UPDATE action_items SET status = ? WHERE id = ?",
+            (status, item_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0

@@ -299,6 +299,99 @@ async def generate_minutes(transcript: str, context: str | None = None) -> str:
     return content.strip()
 
 
+# ── 結構化待辦抽取（供跨會議追蹤看板）────────────────────────────────────────
+
+ACTION_ITEMS_SYSTEM_PROMPT = """你是會議記錄助理。從整場逐字稿中抽出「待辦事項」，
+輸出嚴格 JSON（不要 markdown 圍欄、不要任何解釋）。每筆待辦三個欄位：
+assignee=負責人、task=要做的事、due=期限。
+
+以下是「格式範例」，示範輸出長相，請勿把範例文字抄進結果——只依真實逐字稿填：
+{"items": [{"assignee": "小王", "task": "整理需求規格書寄給客戶", "due": "本週五"}, {"assignee": "", "task": "確認伺服器授權數量", "due": ""}]}
+
+規則：
+- 只抽真正的待辦/行動項（某人要去做某事）。單純的討論、結論、風險不是待辦。
+- task 必填且具體，要寫逐字稿裡真正談到的事，不是上面的範例。
+- assignee、due 逐字稿沒提到就填空字串 ""，絕不編造、也不要填「負責人」「期限」這種佔位字。
+- 用繁體中文。逐字稿裡沒有任何待辦就回 {"items": []}。
+- 只輸出 JSON，一個字都不要多。"""
+
+
+def parse_action_items_json(raw: str) -> list[dict[str, str]]:
+    """把 LLM 回傳解析成待辦 list（每筆含 assignee/task/due）。
+
+    容錯：嚴格 → strip markdown fences → 抓第一個 {...} 區塊。
+    無法解析回空 list（待辦是加值資訊，抽不到不該讓整個歸檔失敗）。
+    """
+    if not raw or not raw.strip():
+        return []
+    candidates = [raw.strip()]
+    fence_match = _MARKDOWN_FENCE_RE.match(raw.strip())
+    if fence_match:
+        candidates.append(fence_match.group(1).strip())
+    brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if brace_match:
+        candidates.append(brace_match.group(0))
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            continue
+        cleaned: list[dict[str, str]] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            task = str(it.get("task", "")).strip()
+            if not task or task in _ACTION_PLACEHOLDER_TASKS:
+                continue  # 空 task 或 LLM 照抄 schema 佔位詞 → 丟棄
+            assignee = str(it.get("assignee", "")).strip()
+            due = str(it.get("due", "")).strip()
+            cleaned.append({
+                "assignee": "" if assignee in _ACTION_PLACEHOLDER_FIELDS else assignee,
+                "task": task,
+                "due": "" if due in _ACTION_PLACEHOLDER_FIELDS else due,
+            })
+        return cleaned
+    return []
+
+
+# LLM（尤其小模型）偶爾照抄 prompt schema 的佔位字，這裡當髒資料濾掉。
+_ACTION_PLACEHOLDER_TASKS = {"要做的事", "task", "待辦", "事項"}
+_ACTION_PLACEHOLDER_FIELDS = {
+    "負責人或空字串", "負責人", "assignee", "期限或空字串", "期限", "due",
+}
+
+
+async def extract_action_items(
+    transcript: str, context: str | None = None
+) -> list[dict[str, str]]:
+    """對外：從逐字稿抽出結構化待辦（供歸檔時寫入 action_items 表）。
+
+    LLM 或解析失敗一律回空 list，不拋例外——待辦是加值，不能拖垮歸檔主流程。
+    """
+    text = (transcript or "").strip()
+    if not text:
+        return []
+    user_content = text
+    ctx = (context or "").strip()
+    if ctx:
+        user_content = f"【會議背景】\n{ctx}\n\n【逐字稿】\n{text}"
+    try:
+        content = await _chat_completion(
+            ACTION_ITEMS_SYSTEM_PROMPT,
+            user_content,
+            temperature=0.1,
+            max_tokens=800,
+        )
+    except Exception:  # noqa: BLE001 — 待辦抽取失敗不影響歸檔
+        logger.exception("extract_action_items LLM failed")
+        return []
+    return parse_action_items_json(content)
+
+
 # ── 會議標題（供儲存表單自動預填）─────────────────────────────────────────────
 
 TITLE_SYSTEM_PROMPT = """你是會議記錄助理。根據提供的會議逐字稿，下一個精簡、具體的標題。
