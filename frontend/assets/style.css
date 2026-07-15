@@ -1869,6 +1869,15 @@ body.is-finalized .transcript {
   padding: 10px 12px;
 }
 
+.history-detail__minutes {
+  font-size: 13px;
+  line-height: 1.6;
+  background: #fafafa;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
 .history-detail__transcript-details {
   margin-top: 4px;
 }

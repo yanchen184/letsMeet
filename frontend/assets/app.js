@@ -109,6 +109,8 @@
     finalizing: false,       // 收尾流程進行中,避免重複觸發
     finalized: false,        // 已跑過收尾 → 逐字稿唯讀
     meetingDurationSec: 0,   // 這場會議時長(結束時定格,供會議記錄用)
+    savedMeetingId: null,    // 這場已歸檔的會議 id;有值則後續存檔/修訂走更新不開新筆
+    savedMeetingPin: null,   // 歸檔時設的 PIN,更新同一筆時要帶回驗證
   };
 
   const RECORD_SAMPLE_RATE = 16000; // 與 AudioWorklet targetSampleRate 一致
@@ -1353,6 +1355,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
     state.finalizing = false;
     state.finalized = false;
     state.meetingDurationSec = 0;
+    state.savedMeetingId = null;
+    state.savedMeetingPin = null;
     document.body.classList.remove("is-finalized");
     if (dom.minutesPanel) dom.minutesPanel.hidden = true;
     if (dom.minutesBody) dom.minutesBody.innerHTML = "";
@@ -1413,6 +1417,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
       setMinutesStat("已完成");
       if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = !state.minutes;
       if (dom.btnEditMinutes) dom.btnEditMinutes.disabled = !state.minutes;
+      // ③ 自動歸檔進會議庫(失敗不擋,狀態列提示可手動存)
+      await autoArchiveMeeting();
     } catch (err) {
       console.error("minutes failed", err);
       state.minutes = "";
@@ -1444,6 +1450,92 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (!revised) return base;
     const block = `【人工修訂重點摘要（與逐字稿出入時以此為準）】\n${revised}`;
     return base ? `${base}\n\n${block}` : block;
+  }
+
+  // ─── 結束會議自動歸檔（Task 17）────────────────────────────────
+  // finalize 成功後自動存進會議庫,不用等使用者按「儲存會議」。
+  // 標題用 /api/title 產(失敗退日期時間),owner 用上次存檔記的名字(沒有就「未署名」)。
+  // 已歸檔過(含手動存過)→ 更新同一筆,不開新筆。
+  function buildArchiveContents() {
+    return {
+      summary: joinedDigestSummary() || null,
+      transcript: getFullTranscript() || null,
+      questions: state.questionItems.length
+        ? state.questionItems.map((it) => ({ q: it.q, why: it.why }))
+        : null,
+      minutes: state.minutes || null,
+    };
+  }
+
+  async function autoArchiveMeeting() {
+    try {
+      if (state.savedMeetingId) {
+        const resp = await fetch(`${API_BASE}/api/meetings/${state.savedMeetingId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...buildArchiveContents(), pin: state.savedMeetingPin || null }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        setMinutesStat(`已完成・歸檔 #${state.savedMeetingId} 已更新`);
+      } else {
+        const title = await generateArchiveTitle();
+        const owner = localStorage.getItem(LS_OWNER_KEY) || "未署名";
+        const resp = await fetch(`${API_BASE}/api/meetings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title,
+            owner,
+            context: buildContext(),
+            ...buildArchiveContents(),
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        state.savedMeetingId = data.id;
+        setMinutesStat(`已完成・已自動歸檔 #${data.id}`);
+      }
+    } catch (err) {
+      console.error("auto archive failed", err);
+      setMinutesStat("已完成・自動歸檔失敗,可按「儲存會議」手動存");
+    }
+  }
+
+  async function generateArchiveTitle() {
+    const transcript = getFullTranscript();
+    if (transcript.trim()) {
+      try {
+        const resp = await fetch(`${API_BASE}/api/title`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.title) return data.title;
+      } catch (_e) { /* 退 fallback */ }
+    }
+    const d = new Date();
+    return `會議 ${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+
+  // 會議記錄修訂後,同步回已歸檔那筆(沒歸檔就不動)
+  async function syncMinutesToArchive() {
+    if (!state.savedMeetingId) return;
+    try {
+      const resp = await fetch(`${API_BASE}/api/meetings/${state.savedMeetingId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          minutes: state.minutes || null,
+          pin: state.savedMeetingPin || null,
+        }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      setMinutesStat(`已修訂・歸檔 #${state.savedMeetingId} 已同步`);
+    } catch (err) {
+      console.error("sync minutes to archive failed", err);
+      setMinutesStat("已修訂・歸檔同步失敗");
+    }
   }
 
   // ─── 會議記錄編輯模式：textarea 取代渲染,存檔寫回 state.minutes ──
@@ -1485,6 +1577,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
     const changed = v && v !== state.minutes.trim();
     if (changed) state.minutes = v;
     endMinutesEdit(changed ? "已修訂" : "已完成");
+    if (changed) syncMinutesToArchive();
   }
 
   function cancelMinutesEdit() {
@@ -1500,7 +1593,12 @@ registerProcessor('pcm16-writer', PCM16Writer);
       return;
     }
     dom.minutesBody.innerHTML = "";
-    state.minutes.split("\n").forEach((raw) => {
+    renderMinutesInto(dom.minutesBody, state.minutes);
+  }
+
+  // 極簡 Markdown 渲染共用：收尾面板與歷史詳情都用
+  function renderMinutesInto(container, text) {
+    text.split("\n").forEach((raw) => {
       const line = raw.trimEnd();
       if (!line.trim()) return;
       let el;
@@ -1517,7 +1615,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
         el.className = "minutes-p";
         el.textContent = line;
       }
-      dom.minutesBody.appendChild(el);
+      container.appendChild(el);
     });
   }
 
@@ -1715,29 +1813,38 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (confirmBtn) confirmBtn.disabled = true;
 
     try {
-      const questions = state.questionItems.map((it) => ({ q: it.q, why: it.why }));
-      const summary = state.digests.map((d) => d.summary).filter(Boolean).join("\n");
-      const resp = await fetch(`${API_BASE}/api/meetings`, {
-        method: "POST",
+      // 已自動歸檔過 → 更新同一筆(標題/owner/PIN 以表單為準),不開新筆
+      const isUpdate = !!state.savedMeetingId;
+      const url = isUpdate
+        ? `${API_BASE}/api/meetings/${state.savedMeetingId}`
+        : `${API_BASE}/api/meetings`;
+      const body = {
+        title,
+        owner,
+        ...buildArchiveContents(),
+      };
+      if (isUpdate) {
+        body.pin = state.savedMeetingPin || null;
+        if (pin) body.pin_code = pin; // 空欄不動既有 PIN
+      } else {
+        body.context = buildContext();
+        body.pin_code = pin || null;
+      }
+      const resp = await fetch(url, {
+        method: isUpdate ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title,
-          owner,
-          context: buildContext(),
-          summary: summary || null,
-          transcript: getFullTranscript() || null,
-          questions: questions.length ? questions : null,
-          pin_code: pin || null,
-        }),
+        body: JSON.stringify(body),
       });
+      const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        const errData = await resp.json().catch(() => ({}));
-        setSaveMsg(errData.error || `儲存失敗 (HTTP ${resp.status})`, true);
+        setSaveMsg(data.error || `儲存失敗 (HTTP ${resp.status})`, true);
         return;
       }
       // success
+      if (data.id) state.savedMeetingId = data.id;
+      state.savedMeetingPin = pin || null;
       localStorage.setItem(LS_OWNER_KEY, owner);
-      setSaveMsg("已存檔 ✓", false);
+      setSaveMsg(isUpdate ? "已更新歸檔 ✓" : "已存檔 ✓", false);
       // 短暫停留後自動關閉表單
       setTimeout(hideSaveForm, 1500);
     } catch (err) {
@@ -2005,6 +2112,19 @@ registerProcessor('pcm16-writer', PCM16Writer);
       : "";
     metaEl.textContent = [mtg.owner, dateStr].filter(Boolean).join(" · ");
     detailView.appendChild(metaEl);
+
+    // AI 會議記錄（自動歸檔存的結構化 Markdown）
+    if (mtg.minutes) {
+      const minutesLabel = document.createElement("h3");
+      minutesLabel.className = "history-detail__section-label";
+      minutesLabel.textContent = "會議記錄";
+      detailView.appendChild(minutesLabel);
+
+      const minutesDiv = document.createElement("div");
+      minutesDiv.className = "history-detail__minutes";
+      renderMinutesInto(minutesDiv, mtg.minutes);
+      detailView.appendChild(minutesDiv);
+    }
 
     // 重點摘要
     if (mtg.summary) {

@@ -282,6 +282,7 @@ class MeetingSaveRequest(BaseModel):
     summary: str | None = Field(default=None, description="重點摘要")
     transcript: str | None = Field(default=None, description="完整原始逐字稿")
     questions: list[dict] | None = Field(default=None, description="產出追問")
+    minutes: str | None = Field(default=None, description="結構化會議記錄 Markdown")
     pin_code: str | None = Field(default=None, description="選填 4 位數字 PIN，由建立者自設")
 
 
@@ -310,10 +311,85 @@ async def save_meeting_endpoint(req: MeetingSaveRequest) -> JSONResponse:
         summary=req.summary,
         transcript=req.transcript,
         questions=req.questions,
+        minutes=req.minutes,
         pin_code=pin,
     )
     logger.info("meeting saved [%s] id=%d owner=%s", request_id, mid, req.owner)
     return JSONResponse({"id": mid}, headers={"X-Request-Id": request_id})
+
+
+class MeetingUpdateRequest(BaseModel):
+    """部分更新：只送要改的欄位。pin 是驗證用（該場有設 PIN 才要），pin_code 是改新值。"""
+
+    title: str | None = Field(default=None, description="會議標題")
+    owner: str | None = Field(default=None, description="填寫者 / 歸誰")
+    summary: str | None = Field(default=None, description="重點摘要")
+    transcript: str | None = Field(default=None, description="完整原始逐字稿")
+    questions: list[dict] | None = Field(default=None, description="產出追問")
+    minutes: str | None = Field(default=None, description="結構化會議記錄 Markdown")
+    pin: str | None = Field(default=None, description="驗證用：該場已設 PIN 時必帶")
+    pin_code: str | None = Field(default=None, description="改設新 PIN（4 位數字）")
+
+
+@router.put("/meetings/{meeting_id}", response_model=None)
+async def update_meeting_endpoint(meeting_id: int, req: MeetingUpdateRequest) -> JSONResponse:
+    """更新既有會議（自動歸檔後補會議記錄 / 手動存檔改標題）。
+
+    設了 PIN 的場次需帶 pin 驗證；只更新 request 有出現的欄位。
+    """
+    request_id = uuid.uuid4().hex
+    meeting = db.get_meeting(DB_PATH, meeting_id)
+    if meeting is None:
+        return JSONResponse(
+            {"error": "找不到該場會議"},
+            status_code=404,
+            headers={"X-Request-Id": request_id},
+        )
+    stored_pin = meeting.get("pin_code")
+    if stored_pin and (req.pin or "").strip() != stored_pin:
+        return JSONResponse(
+            {"error": "PIN 錯誤或未提供", "pin_required": True},
+            status_code=401,
+            headers={"X-Request-Id": request_id},
+        )
+
+    provided = req.model_dump(exclude_unset=True)
+    updates: dict = {}
+    if "title" in provided:
+        title = (req.title or "").strip()
+        if not title:
+            return JSONResponse(
+                {"error": "title 不可為空"},
+                status_code=422,
+                headers={"X-Request-Id": request_id},
+            )
+        updates["title"] = title
+    if "owner" in provided:
+        owner = (req.owner or "").strip()
+        if not owner:
+            return JSONResponse(
+                {"error": "owner 不可為空"},
+                status_code=422,
+                headers={"X-Request-Id": request_id},
+            )
+        updates["owner"] = owner
+    if "pin_code" in provided:
+        new_pin = (req.pin_code or "").strip() or None
+        if new_pin is not None and not re.fullmatch(r"\d{4}", new_pin):
+            return JSONResponse(
+                {"error": "pin_code 須為 4 位數字"},
+                status_code=422,
+                headers={"X-Request-Id": request_id},
+            )
+        updates["pin_code"] = new_pin
+    for field in ("summary", "transcript", "questions", "minutes"):
+        if field in provided:
+            updates[field] = provided[field]
+
+    if updates:
+        db.update_meeting(DB_PATH, meeting_id, **updates)
+    logger.info("meeting updated [%s] id=%d fields=%s", request_id, meeting_id, sorted(updates))
+    return JSONResponse({"id": meeting_id}, headers={"X-Request-Id": request_id})
 
 
 @router.get("/meetings", response_model=None)

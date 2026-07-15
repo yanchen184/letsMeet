@@ -35,6 +35,7 @@ def init_db(path: str) -> None:
             "FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE)"
         )
         _ensure_column(conn, "meetings", "pin_code", "TEXT")
+        _ensure_column(conn, "meeting_contents", "minutes", "TEXT")
         conn.commit()
 
 
@@ -54,6 +55,7 @@ def save_meeting(
     summary: str | None,
     transcript: str | None,
     questions: list[dict] | None,
+    minutes: str | None = None,
     pin_code: str | None = None,
 ) -> int:
     """一筆 transaction 寫 meetings + meeting_contents，回 id。
@@ -70,12 +72,79 @@ def save_meeting(
         )
         mid = int(cur.lastrowid)
         conn.execute(
-            "INSERT INTO meeting_contents (meeting_id, summary, transcript, questions) "
-            "VALUES (?, ?, ?, ?)",
-            (mid, summary, transcript, questions_json),
+            "INSERT INTO meeting_contents (meeting_id, summary, transcript, questions, minutes) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mid, summary, transcript, questions_json, minutes),
         )
         conn.commit()
     return mid
+
+
+_UNSET = object()
+
+
+def update_meeting(
+    path: str,
+    meeting_id: int,
+    *,
+    title: str | object = _UNSET,
+    owner: str | object = _UNSET,
+    pin_code: str | None | object = _UNSET,
+    summary: str | None | object = _UNSET,
+    transcript: str | None | object = _UNSET,
+    questions: list[dict] | None | object = _UNSET,
+    minutes: str | None | object = _UNSET,
+) -> bool:
+    """部分更新一場會議（自動歸檔後補 minutes / 手動存檔改標題用）。
+
+    只更新有傳入的欄位；不存在回 False。
+    """
+    meta_sets: list[str] = []
+    meta_params: list = []
+    if title is not _UNSET:
+        meta_sets.append("title = ?")
+        meta_params.append(title)
+    if owner is not _UNSET:
+        meta_sets.append("owner = ?")
+        meta_params.append(owner)
+    if pin_code is not _UNSET:
+        meta_sets.append("pin_code = ?")
+        meta_params.append(pin_code)
+
+    content_sets: list[str] = []
+    content_params: list = []
+    if summary is not _UNSET:
+        content_sets.append("summary = ?")
+        content_params.append(summary)
+    if transcript is not _UNSET:
+        content_sets.append("transcript = ?")
+        content_params.append(transcript)
+    if questions is not _UNSET:
+        content_sets.append("questions = ?")
+        content_params.append(json.dumps(questions or [], ensure_ascii=False))
+    if minutes is not _UNSET:
+        content_sets.append("minutes = ?")
+        content_params.append(minutes)
+
+    with closing(_connect(path)) as conn:
+        row = conn.execute(
+            "SELECT id FROM meetings WHERE id = ?", (meeting_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if meta_sets:
+            conn.execute(
+                f"UPDATE meetings SET {', '.join(meta_sets)} WHERE id = ?",
+                (*meta_params, meeting_id),
+            )
+        if content_sets:
+            conn.execute(
+                f"UPDATE meeting_contents SET {', '.join(content_sets)} "
+                "WHERE meeting_id = ?",
+                (*content_params, meeting_id),
+            )
+        conn.commit()
+    return True
 
 
 def list_meetings(path: str, owner: str | None = None) -> list[dict]:
@@ -107,7 +176,7 @@ def get_meeting(path: str, meeting_id: int) -> dict | None:
     """單場完整內容（join 兩表）；不存在回 None。"""
     sql = (
         "SELECT m.id, m.title, m.owner, m.context, m.created_at, m.pin_code, "
-        "c.summary, c.transcript, c.questions "
+        "c.summary, c.transcript, c.questions, c.minutes "
         "FROM meetings m LEFT JOIN meeting_contents c ON c.meeting_id = m.id "
         "WHERE m.id = ?"
     )
