@@ -63,6 +63,7 @@
     minutesStat: $("minutesStat"),
     btnDownloadMinutes: $("btnDownloadMinutes"),
     btnRegenMinutes: $("btnRegenMinutes"),
+    btnEditMinutes: $("btnEditMinutes"),
   };
 
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -94,7 +95,8 @@
     askedThrough: 0,         // 游標:已產問涵蓋到「第幾行之前」(exclusive)。新行 = transcriptLines.slice(askedThrough)
     audioChunks: [],         // 錄音 PCM 累積 [Int16Array, ...]，停止時拼成 WAV
     audioSamples: 0,         // 已累積 sample 數，用來算時長與配置 buffer
-    digests: [],             // 重點摘要 [{from, to, summary}]，每次產問順手 append
+    digests: [],             // 重點摘要 [{from, to, summary, edited}]，每次產問順手 append
+    digestsEdited: false,    // 使用者改過任一段摘要 → 產問/收尾改用畫面上的摘要當前段脈絡
     chatHistory: [],         // chat 對話 [{role, content}]，只存記憶體
     chatStreaming: false,    // chat 串流進行中，避免重複送出
     fileTimer: null,         // dev 餵檔模式:送幀 setInterval handle,送完/停止時清掉
@@ -103,6 +105,7 @@
     uploadAbort: null,       // 上傳音檔轉錄中的 AbortController;null = 沒在轉
     // ── 結束會議收尾 ──
     minutes: "",             // AI 整理出的結構化會議記錄 Markdown
+    minutesEditing: false,   // 會議記錄編輯模式中(textarea 取代渲染)
     finalizing: false,       // 收尾流程進行中,避免重複觸發
     finalized: false,        // 已跑過收尾 → 逐字稿唯讀
     meetingDurationSec: 0,   // 這場會議時長(結束時定格,供會議記錄用)
@@ -527,7 +530,9 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
       const meta = document.createElement("div");
       meta.className = "digest-meta";
-      meta.textContent = `第 ${i + 1} 段（第 ${d.from + 1}–${d.to} 行）`;
+      meta.textContent =
+        `第 ${i + 1} 段（第 ${d.from + 1}–${d.to} 行）` +
+        (d.edited ? "・已修訂" : "");
       block.appendChild(meta);
 
       const body = document.createElement("div");
@@ -537,12 +542,17 @@ registerProcessor('pcm16-writer', PCM16Writer);
         body.textContent = "摘要產生中…";
         block.appendChild(body);
       } else if (d.summary) {
+        body.classList.add("digest-editable");
+        body.title = "點擊修改這段摘要";
         body.textContent = d.summary;
+        body.addEventListener("click", () => startDigestEdit(d, block, body));
         block.appendChild(body);
       } else {
-        // 失敗：顯示佔位 + 重新生成按鈕（只重跑這一段）
-        body.className = "digest-text digest-failed";
-        body.textContent = "（這段摘要產生失敗）";
+        // 失敗：顯示佔位 + 重新生成按鈕（只重跑這一段）；也可點擊手動補寫
+        body.className = "digest-text digest-failed digest-editable";
+        body.title = "點擊手動補寫這段摘要";
+        body.textContent = "（這段摘要產生失敗，點擊可手動補寫）";
+        body.addEventListener("click", () => startDigestEdit(d, block, body));
         block.appendChild(body);
 
         const retry = document.createElement("button");
@@ -555,6 +565,43 @@ registerProcessor('pcm16-writer', PCM16Writer);
       }
       dom.digestList.appendChild(block);
     });
+  }
+
+  // 點擊摘要段落 → 原地換成 textarea 編輯。blur / Cmd(Ctrl)+Enter 存檔，
+  // Esc 取消。存檔後標記 edited，後續產問/收尾改用畫面上的摘要當脈絡。
+  function startDigestEdit(entry, block, body) {
+    if (entry.pending) return;
+    const ta = document.createElement("textarea");
+    ta.className = "digest-edit";
+    ta.value = entry.summary || "";
+    ta.rows = Math.max(2, Math.min(10, (ta.value.match(/\n/g) || []).length + 2));
+    block.replaceChild(ta, body);
+    ta.focus();
+    const commit = () => {
+      const v = ta.value.trim();
+      // 改空 = 取消（避免手滑清掉整段）；有內容且變了才算修訂
+      if (v && v !== (entry.summary || "").trim()) {
+        entry.summary = v;
+        entry.edited = true;
+        state.digestsEdited = true;
+      }
+      renderDigests();
+    };
+    ta.addEventListener("blur", commit);
+    ta.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ta.value = entry.summary || "";
+        ta.blur();
+      } else if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+        ta.blur();
+      }
+    });
+  }
+
+  // 畫面上目前的重點摘要全文（含人工修訂）。使用者改過摘要後,
+  // 產問的 prior_summary / 收尾的 context 都改用這份,取代後端 rolling cache。
+  function joinedDigestSummary() {
+    return state.digests.map((d) => d.summary).filter(Boolean).join("\n");
   }
 
   // 呼叫 /api/digest 填一段摘要；appendDigest 與「重新生成」共用。
@@ -1171,9 +1218,13 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (isRange) {
       transcript = getRangeTranscript();
     } else if (newLineCount > 0) {
-      // 增量:只送新行,舊內容當背景
+      // 增量:只送新行,舊內容當背景。
+      // 使用者改過重點摘要 → 改用畫面上的摘要(含修訂)當前段脈絡,
+      // 後端 rolling cache 不含人工修訂,不能再用。
       transcript = getRecentTranscript();
-      priorSummary = state.priorSummary;
+      priorSummary = state.digestsEdited
+        ? joinedDigestSummary() || state.priorSummary
+        : state.priorSummary;
       // 還沒摘要過(cache 空)且游標前有舊行 → 把舊原文丟給後端摘要
       if (!priorSummary && state.askedThrough > 0) {
         olderTranscript = state.transcriptLines
@@ -1298,6 +1349,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
   // 清空 / 重新開錄時，把收尾面板與狀態歸零
   function resetFinalizeState() {
     state.minutes = "";
+    state.minutesEditing = false;
     state.finalizing = false;
     state.finalized = false;
     state.meetingDurationSec = 0;
@@ -1307,6 +1359,10 @@ registerProcessor('pcm16-writer', PCM16Writer);
     setMinutesStat("—");
     if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = true;
     if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = true;
+    if (dom.btnEditMinutes) {
+      dom.btnEditMinutes.disabled = true;
+      dom.btnEditMinutes.textContent = "編輯";
+    }
   }
 
   // ─── 結束會議：跑一次 AI 收尾 → 產生完整會議記錄 ──────────────────
@@ -1329,6 +1385,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
     }
     if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = true;
     if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = true;
+    if (dom.btnEditMinutes) dom.btnEditMinutes.disabled = true;
+    state.minutesEditing = false;
     refreshAskButton();
 
     // ① 全文補產一批問題（沒新行就不動）。不擋主流程，失敗吞掉。
@@ -1338,12 +1396,12 @@ registerProcessor('pcm16-writer', PCM16Writer);
       }
     } catch (_e) { /* 產問失敗不影響會議記錄 */ }
 
-    // ② 產結構化會議記錄
+    // ② 產結構化會議記錄。使用者改過重點摘要 → 附進 context 要 AI 以修訂版為準
     try {
       const resp = await fetch(`${API_BASE}/api/minutes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript, context: buildContext() }),
+        body: JSON.stringify({ transcript, context: buildMinutesContext() }),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -1354,6 +1412,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
       renderMinutes();
       setMinutesStat("已完成");
       if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = !state.minutes;
+      if (dom.btnEditMinutes) dom.btnEditMinutes.disabled = !state.minutes;
     } catch (err) {
       console.error("minutes failed", err);
       state.minutes = "";
@@ -1365,6 +1424,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
       setMinutesStat("失敗");
       // 失敗時仍允許下載（用逐字稿+問題組，minutes 段標註失敗）
       if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = false;
+      if (dom.btnEditMinutes) dom.btnEditMinutes.disabled = true;
     } finally {
       state.finalizing = false;
       if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = false;
@@ -1374,6 +1434,61 @@ registerProcessor('pcm16-writer', PCM16Writer);
 
   function setMinutesStat(text) {
     if (dom.minutesStat) dom.minutesStat.textContent = text;
+  }
+
+  // 收尾用 context：一般背景 + （若有）人工修訂過的重點摘要,要 AI 以修訂版為準
+  function buildMinutesContext() {
+    const base = buildContext();
+    if (!state.digestsEdited) return base;
+    const revised = joinedDigestSummary();
+    if (!revised) return base;
+    const block = `【人工修訂重點摘要（與逐字稿出入時以此為準）】\n${revised}`;
+    return base ? `${base}\n\n${block}` : block;
+  }
+
+  // ─── 會議記錄編輯模式：textarea 取代渲染,存檔寫回 state.minutes ──
+  function startMinutesEdit() {
+    if (!dom.minutesBody || state.finalizing || state.minutesEditing) return;
+    if (!state.minutes) return;
+    state.minutesEditing = true;
+    const ta = document.createElement("textarea");
+    ta.className = "minutes-edit";
+    ta.id = "minutesEditArea";
+    ta.value = state.minutes;
+    dom.minutesBody.innerHTML = "";
+    dom.minutesBody.appendChild(ta);
+    ta.focus();
+    // 編輯中避免下載到未存檔內容 / 重新整理蓋掉編輯
+    if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = true;
+    if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = true;
+    if (dom.btnEditMinutes) dom.btnEditMinutes.textContent = "儲存修改";
+    setMinutesStat("編輯中…");
+    ta.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") cancelMinutesEdit();
+      else if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) commitMinutesEdit();
+    });
+  }
+
+  function endMinutesEdit(statText) {
+    state.minutesEditing = false;
+    renderMinutes();
+    setMinutesStat(statText);
+    if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = !state.minutes;
+    if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = false;
+    if (dom.btnEditMinutes) dom.btnEditMinutes.textContent = "編輯";
+  }
+
+  function commitMinutesEdit() {
+    const ta = $("minutesEditArea");
+    if (!ta) return;
+    const v = ta.value.trim();
+    const changed = v && v !== state.minutes.trim();
+    if (changed) state.minutes = v;
+    endMinutesEdit(changed ? "已修訂" : "已完成");
+  }
+
+  function cancelMinutesEdit() {
+    endMinutesEdit("已完成");
   }
 
   // 把 minutes Markdown 以極簡方式渲染（標題 + 條列），不引入 md 函式庫
@@ -1972,6 +2087,12 @@ registerProcessor('pcm16-writer', PCM16Writer);
   // 會議記錄下載 / 重新整理
   if (dom.btnDownloadMinutes) {
     dom.btnDownloadMinutes.addEventListener("click", downloadMinutes);
+  }
+  if (dom.btnEditMinutes) {
+    dom.btnEditMinutes.addEventListener("click", () => {
+      if (state.minutesEditing) commitMinutesEdit();
+      else startMinutesEdit();
+    });
   }
   if (dom.btnRegenMinutes) {
     dom.btnRegenMinutes.addEventListener("click", () => finalizeMeeting());

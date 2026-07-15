@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>letsMeet</title>
-  <link rel="stylesheet" href="assets/style.css?v=cockpit1" />
+  <link rel="stylesheet" href="assets/style.css?v=edit1" />
 </head>
 <body>
   <header class="bar">
     <div class="bar-inner">
       <span class="logo">letsMeet</span>
-      <span class="app-version" title="版本">v1.1.0</span>
+      <span class="app-version" title="版本">v1.2.0</span>
       <div class="session-meter" aria-label="會議狀態">
         <span id="connState" class="badge offline">待機</span>
         <span id="elapsed" class="elapsed" aria-label="已錄時間">00:00:00</span>
@@ -115,7 +115,7 @@
         <div id="digestArea" class="digest-area" hidden>
           <div class="digest-head">
             <span class="digest-title">重點摘要</span>
-            <span class="digest-hint">產問時自動整理</span>
+            <span class="digest-hint">產問時自動整理・點擊段落可修改</span>
           </div>
           <div id="digestList" class="digest-list"></div>
         </div>
@@ -138,6 +138,8 @@
         <div id="minutesBody" class="minutes-body" aria-live="polite"></div>
         <div class="minutes-actions">
           <button id="btnDownloadMinutes" class="btn primary" type="button" disabled>下載會議記錄 (.md)</button>
+          <button id="btnEditMinutes" class="btn ghost" type="button" disabled
+                  title="直接修改會議記錄內容，存檔後的下載會用修改版">編輯</button>
           <button id="btnRegenMinutes" class="btn ghost" type="button" disabled
                   title="重新讓 AI 整理整場逐字稿">重新整理</button>
         </div>
@@ -316,6 +318,6 @@
     </span>
   </footer>
 
-  <script src="assets/app.js?v=cockpit2"></script>
+  <script src="assets/app.js?v=edit1"></script>
 </body>
 </html>

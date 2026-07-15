@@ -1416,6 +1416,38 @@ body.is-recording .btn.primary::before {
   font-style: italic;
 }
 
+.digest-text.digest-editable {
+  cursor: pointer;
+  border-radius: 6px;
+  margin: -2px -6px;
+  padding: 2px 6px;
+  transition: background 0.15s ease;
+}
+
+.digest-text.digest-editable:hover {
+  background: var(--accent-soft, #ecfdf5);
+  outline: 1px dashed var(--accent, #10b981);
+}
+
+.digest-edit,
+.minutes-edit {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  color: inherit;
+  background: var(--panel, #fff);
+  border: 1px solid var(--accent, #10b981);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.minutes-edit {
+  min-height: 260px;
+}
+
 .digest-retry {
   margin-top: 4px;
   padding: 3px 10px;
