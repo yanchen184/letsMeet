@@ -44,6 +44,10 @@
     questionsStat: $("questionsStat"),
     contextHint: $("contextHint"),
     meetingInfo: $("meetingInfo"),
+    tplList: $("tplList"),
+    btnTplSave: $("btnTplSave"),
+    btnTplUpdate: $("btnTplUpdate"),
+    btnTplDelete: $("btnTplDelete"),
     contextBody: $("contextBody"),
     btnContextToggle: $("btnContextToggle"),
     chkAutoAsk: $("chkAutoAsk"),
@@ -119,21 +123,8 @@
   const MIN_LINES_TO_ASK = 3;
   const AUTO_ASK_EVERY_LINES = 8; // 每累積這麼多行,自動產問一次
 
-  // 四種溝通情境的背景範本;點按鈕覆蓋填入 contextHint
-  const CONTEXT_PRESETS = {
-    client:
-      "我是乙方專案經理，正在跟甲方／客戶開會。請站在我的立場，幫我追問釐清需求、" +
-      "驗收標準、範圍邊界、變更誰拍板、時程與費用，把對方含糊或保留的說法挖清楚。",
-    engineer:
-      "我是 PM／需求方，正在跟工程師討論實作。請幫我追問技術可行性、工時估算依據、" +
-      "技術依賴與卡點、潛在風險、以及「做不完時砍什麼」的取捨，避免工程師低估或漏講風險。",
-    pm:
-      "我是工程師，正在跟 PM／產品方對需求。請幫我追問規格細節、需求優先序、" +
-      "驗收條件、deadline 是否合理、誰能拍板改規格，把模糊的需求變成可實作的明確條件。",
-    eng_pm:
-      "這是工程師與 PM 的協調會議，我要居中釐清雙方落差。請幫我追問：規格認知是否一致、" +
-      "估時與期程有沒有衝突、技術債與功能取捨怎麼決定、變更與責任歸屬，讓兩邊對齊。",
-  };
+  // 背景範本改存後端 DB（GET/POST/PUT/DELETE /api/contexts），
+  // 原本寫死的四種情境已作為種子資料進 DB，見 backend/app/db.py。
 
   // ─── AudioWorklet：把麥克風 PCM resample 成 16kHz int16 ──────────
   const WORKLET_CODE = `
@@ -199,14 +190,30 @@ class PCM16Writer extends AudioWorkletProcessor {
 registerProcessor('pcm16-writer', PCM16Writer);
 `;
 
+  // 非 HTTPS（且非 localhost）時瀏覽器不給麥克風與 AudioWorklet，先擋下來給引導
+  function checkRecordingSupport() {
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      return "瀏覽器只在 HTTPS 頁面開放麥克風。請改用 HTTPS 網址開啟本頁（把網址的 http:// 換成 https://、埠號換成 8444），首次會跳憑證警告，按「進階 → 繼續前往」即可。";
+    }
+    if (!(window.AudioContext || window.webkitAudioContext)) {
+      return "此瀏覽器不支援 Web Audio，無法錄音，請改用新版 Chrome / Edge / Safari。";
+    }
+    return null;
+  }
+
   async function ensureWorkletReady() {
     if (!state.audioCtx) {
       state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
+    if (!state.audioCtx.audioWorklet) {
+      throw new Error("此環境不支援 AudioWorklet（通常是非 HTTPS 頁面），請改用 HTTPS 網址");
+    }
     if (!state.workletUrl) {
       const blob = new Blob([WORKLET_CODE], { type: "application/javascript" });
-      state.workletUrl = URL.createObjectURL(blob);
-      await state.audioCtx.audioWorklet.addModule(state.workletUrl);
+      const url = URL.createObjectURL(blob);
+      await state.audioCtx.audioWorklet.addModule(url);
+      // addModule 成功才記住,失敗時下次重試不會誤以為已載入
+      state.workletUrl = url;
     }
     return state.audioCtx;
   }
@@ -765,6 +772,11 @@ registerProcessor('pcm16-writer', PCM16Writer);
   // ─── WebSocket / 錄音 ────────────────────────────────────────────
   async function startRecording() {
     if (state.isRecording) return;
+    const unsupported = checkRecordingSupport();
+    if (unsupported) {
+      showError(unsupported, { persistent: true });
+      return;
+    }
     // 若上一場已收尾，重新開錄視為新一場：清掉會議記錄面板（逐字稿沿用累加）
     if (state.finalized) resetFinalizeState();
     setConn("connecting", "連線中");
@@ -2524,31 +2536,144 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (savedInfo) dom.meetingInfo.value = savedInfo;
   }
 
-  // 情境範本:點了覆蓋填入 contextHint
-  document.querySelectorAll(".preset[data-preset]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const tpl = CONTEXT_PRESETS[btn.dataset.preset];
-      if (!tpl || !dom.contextHint) return;
-      dom.contextHint.value = tpl;
-      dom.contextHint.focus();
-      // 標記當前選中的情境(視覺回饋)
-      document.querySelectorAll(".preset").forEach((b) =>
-        b.classList.toggle("active", b === btn)
+  // ─── 會議背景範本庫：DB 共用，可套用 / 新增 / 更新 / 刪除 ──────────
+  const tplState = { items: [], activeId: null };
+
+  function refreshTplActions() {
+    const hasActive = tplState.activeId != null;
+    if (dom.btnTplUpdate) dom.btnTplUpdate.disabled = !hasActive;
+    if (dom.btnTplDelete) dom.btnTplDelete.disabled = !hasActive;
+  }
+
+  function setActiveTemplate(id) {
+    tplState.activeId = id;
+    if (dom.tplList) {
+      dom.tplList.querySelectorAll(".preset").forEach((b) =>
+        b.classList.toggle("active", Number(b.dataset.tplId) === id)
       );
+    }
+    refreshTplActions();
+  }
+
+  function applyTemplate(tpl) {
+    if (!dom.contextHint) return;
+    dom.contextHint.value = tpl.role_text || "";
+    localStorage.setItem(LS_CONTEXT_ROLE_KEY, dom.contextHint.value);
+    // 會議資訊常是每場不同,範本這欄沒填就保留使用者現有內容
+    if (tpl.goal_text && dom.meetingInfo) {
+      dom.meetingInfo.value = tpl.goal_text;
+      localStorage.setItem(LS_CONTEXT_INFO_KEY, tpl.goal_text);
+    }
+    setActiveTemplate(tpl.id);
+    dom.contextHint.focus();
+  }
+
+  function renderTemplates() {
+    if (!dom.tplList) return;
+    dom.tplList.textContent = "";
+    tplState.items.forEach((tpl) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "preset";
+      btn.dataset.tplId = String(tpl.id);
+      btn.textContent = tpl.name;
+      btn.title = tpl.role_text || tpl.name;
+      btn.addEventListener("click", () => applyTemplate(tpl));
+      dom.tplList.appendChild(btn);
     });
-  });
-  // 手動編輯就清掉選中標記(代表已客製)
+    setActiveTemplate(tplState.activeId);
+  }
+
+  async function loadTemplates() {
+    if (!dom.tplList) return;
+    try {
+      const resp = await fetch(`${API_BASE}/api/contexts`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const body = await resp.json();
+      tplState.items = Array.isArray(body.contexts) ? body.contexts : [];
+      renderTemplates();
+    } catch (_err) {
+      // 非致命:範本載不到仍可手填背景,留個提示就好
+      dom.tplList.textContent = "範本載入失敗";
+    }
+  }
+
+  if (dom.btnTplSave) {
+    dom.btnTplSave.addEventListener("click", async () => {
+      const role = (dom.contextHint?.value || "").trim();
+      const goal = (dom.meetingInfo?.value || "").trim();
+      if (!role && !goal) {
+        showError("先在下方「我的角色與重點 / 會議資訊」填好內容，再存成範本");
+        return;
+      }
+      const name = (window.prompt("範本名稱：") || "").trim();
+      if (!name) return;
+      try {
+        const resp = await fetch(`${API_BASE}/api/contexts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, role_text: role, goal_text: goal }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+        await loadTemplates();
+        setActiveTemplate(body.id);
+      } catch (err) {
+        showError(`存範本失敗：${err.message}`);
+      }
+    });
+  }
+
+  if (dom.btnTplUpdate) {
+    dom.btnTplUpdate.addEventListener("click", async () => {
+      const tpl = tplState.items.find((t) => t.id === tplState.activeId);
+      if (!tpl) return;
+      if (!window.confirm(`用目前填的內容覆蓋範本「${tpl.name}」？`)) return;
+      try {
+        const resp = await fetch(`${API_BASE}/api/contexts/${tpl.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            role_text: (dom.contextHint?.value || "").trim(),
+            goal_text: (dom.meetingInfo?.value || "").trim(),
+          }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+        await loadTemplates();
+        setActiveTemplate(tpl.id);
+      } catch (err) {
+        showError(`更新範本失敗：${err.message}`);
+      }
+    });
+  }
+
+  if (dom.btnTplDelete) {
+    dom.btnTplDelete.addEventListener("click", async () => {
+      const tpl = tplState.items.find((t) => t.id === tplState.activeId);
+      if (!tpl) return;
+      if (!window.confirm(`刪除範本「${tpl.name}」？此動作無法復原。`)) return;
+      try {
+        const resp = await fetch(`${API_BASE}/api/contexts/${tpl.id}`, {
+          method: "DELETE",
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+        setActiveTemplate(null);
+        await loadTemplates();
+      } catch (err) {
+        showError(`刪除範本失敗：${err.message}`);
+      }
+    });
+  }
+
+  loadTemplates();
+
+  // 編輯內容不取消選中：選中代表「正在操作這個範本」，改完按「更新」才能覆蓋回去。
   if (dom.contextHint) {
     dom.contextHint.addEventListener("input", () => {
-      const cur = dom.contextHint.value;
       // 記住使用者填的角色與重點
-      localStorage.setItem(LS_CONTEXT_ROLE_KEY, cur);
-      const matched = Object.values(CONTEXT_PRESETS).includes(cur);
-      if (!matched) {
-        document.querySelectorAll(".preset.active").forEach((b) =>
-          b.classList.remove("active")
-        );
-      }
+      localStorage.setItem(LS_CONTEXT_ROLE_KEY, dom.contextHint.value);
     });
   }
   // 記住使用者填的會議資訊

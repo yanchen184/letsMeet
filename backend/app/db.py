@@ -55,6 +55,21 @@ def init_db(path: str) -> None:
         )
         _ensure_column(conn, "meetings", "pin_code", "TEXT")
         _ensure_column(conn, "meeting_contents", "minutes", "TEXT")
+        # 會議背景範本庫：使用者可自建 / 改 / 刪。內建 4 種情境只在建表當下種一次，
+        # 之後使用者刪掉不會在重啟時被種回來（所以先查表存在與否再 CREATE）。
+        had_ctx_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='context_templates'"
+        ).fetchone() is not None
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS context_templates ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "name TEXT NOT NULL UNIQUE, "
+            "role_text TEXT NOT NULL DEFAULT '', "
+            "goal_text TEXT NOT NULL DEFAULT '', "
+            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        if not had_ctx_table:
+            _seed_context_templates(conn)
         # 全文搜尋：FTS5 + trigram tokenizer（中文子字串比對可靠，unicode61 對 CJK 不斷詞）。
         # rowid = meeting_id，寫入/更新時手動同步（見 _sync_fts）；is_protected 場的內容
         # 仍會進索引，但 search 只回 meta（title/owner），不外洩內文，詳情頁照樣要 PIN。
@@ -424,6 +439,104 @@ def update_action_item_status(path: str, item_id: int, status: str) -> bool:
         cur = conn.execute(
             "UPDATE action_items SET status = ? WHERE id = ?",
             (status, item_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ── 會議背景範本庫 ──────────────────────────────────────────────────────────
+
+# 內建 4 種溝通情境（原前端寫死的 CONTEXT_PRESETS），建表時種入 DB 供使用者改/刪。
+_BUILTIN_CONTEXT_TEMPLATES: list[tuple[str, str]] = [
+    (
+        "跟甲方溝通",
+        "我是乙方專案經理，正在跟甲方／客戶開會。請站在我的立場，幫我追問釐清需求、"
+        "驗收標準、範圍邊界、變更誰拍板、時程與費用，把對方含糊或保留的說法挖清楚。",
+    ),
+    (
+        "跟工程師溝通",
+        "我是 PM／需求方，正在跟工程師討論實作。請幫我追問技術可行性、工時估算依據、"
+        "技術依賴與卡點、潛在風險、以及「做不完時砍什麼」的取捨，避免工程師低估或漏講風險。",
+    ),
+    (
+        "跟 PM 溝通",
+        "我是工程師，正在跟 PM／產品方對需求。請幫我追問規格細節、需求優先序、"
+        "驗收條件、deadline 是否合理、誰能拍板改規格，把模糊的需求變成可實作的明確條件。",
+    ),
+    (
+        "工程師 × PM",
+        "這是工程師與 PM 的協調會議，我要居中釐清雙方落差。請幫我追問：規格認知是否一致、"
+        "估時與期程有沒有衝突、技術債與功能取捨怎麼決定、變更與責任歸屬，讓兩邊對齊。",
+    ),
+]
+
+
+def _seed_context_templates(conn: sqlite3.Connection) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.executemany(
+        "INSERT INTO context_templates (name, role_text, goal_text, created_at, updated_at) "
+        "VALUES (?, ?, '', ?, ?)",
+        [(name, role, now, now) for name, role in _BUILTIN_CONTEXT_TEMPLATES],
+    )
+
+
+def list_context_templates(path: str) -> list[dict]:
+    """全部背景範本，依建立順序（內建 4 個在前）。"""
+    with closing(_connect(path)) as conn:
+        rows = conn.execute(
+            "SELECT id, name, role_text, goal_text, updated_at "
+            "FROM context_templates ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_context_template(path: str, *, name: str, role_text: str, goal_text: str) -> int:
+    """新增範本，回 id。名稱重複由 UNIQUE 約束丟 sqlite3.IntegrityError。"""
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(_connect(path)) as conn:
+        cur = conn.execute(
+            "INSERT INTO context_templates (name, role_text, goal_text, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, role_text, goal_text, now, now),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def update_context_template(
+    path: str,
+    template_id: int,
+    *,
+    name: str | object = _UNSET,
+    role_text: str | object = _UNSET,
+    goal_text: str | object = _UNSET,
+) -> bool:
+    """部分更新範本。不存在回 False；名稱撞 UNIQUE 丟 IntegrityError。"""
+    sets: list[str] = []
+    params: list = []
+    for col, val in (("name", name), ("role_text", role_text), ("goal_text", goal_text)):
+        if val is not _UNSET:
+            sets.append(f"{col} = ?")
+            params.append(val)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    params.append(datetime.now(timezone.utc).isoformat())
+    params.append(template_id)
+    with closing(_connect(path)) as conn:
+        cur = conn.execute(
+            f"UPDATE context_templates SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_context_template(path: str, template_id: int) -> bool:
+    """刪除範本，不存在回 False。"""
+    with closing(_connect(path)) as conn:
+        cur = conn.execute(
+            "DELETE FROM context_templates WHERE id = ?", (template_id,)
         )
         conn.commit()
         return cur.rowcount > 0

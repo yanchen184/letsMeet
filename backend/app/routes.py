@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import sqlite3
 import subprocess
 import threading
 import time
@@ -488,6 +489,116 @@ async def update_action_item_endpoint(
         )
     return JSONResponse(
         {"id": item_id, "status": req.status},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+# ── 會議背景範本庫 ──────────────────────────────────────────────────────────
+
+class ContextTemplateRequest(BaseModel):
+    """新增 / 更新背景範本。PUT 時只送要改的欄位。"""
+
+    name: str | None = Field(default=None, description="範本名稱（唯一）")
+    role_text: str | None = Field(default=None, description="我的角色與重點")
+    goal_text: str | None = Field(default=None, description="會議資訊 / 目標")
+
+
+@router.get("/contexts", response_model=None)
+async def list_contexts_endpoint() -> JSONResponse:
+    """全部背景範本（含內建 4 種情境，皆可改可刪）。"""
+    request_id = uuid.uuid4().hex
+    rows = db.list_context_templates(DB_PATH)
+    return JSONResponse({"contexts": rows}, headers={"X-Request-Id": request_id})
+
+
+@router.post("/contexts", response_model=None)
+async def create_context_endpoint(req: ContextTemplateRequest) -> JSONResponse:
+    """新增背景範本。名稱必填且唯一。"""
+    request_id = uuid.uuid4().hex
+    name = (req.name or "").strip()
+    if not name:
+        return JSONResponse(
+            {"error": "name（範本名稱）不可為空"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    try:
+        tid = db.save_context_template(
+            DB_PATH,
+            name=name,
+            role_text=req.role_text or "",
+            goal_text=req.goal_text or "",
+        )
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": f"已有同名範本「{name}」"},
+            status_code=409,
+            headers={"X-Request-Id": request_id},
+        )
+    logger.info("context template created [%s] id=%d name=%s", request_id, tid, name)
+    return JSONResponse({"id": tid}, headers={"X-Request-Id": request_id})
+
+
+@router.put("/contexts/{template_id}", response_model=None)
+async def update_context_endpoint(
+    template_id: int, req: ContextTemplateRequest
+) -> JSONResponse:
+    """部分更新背景範本（只改 request 有出現的欄位）。"""
+    request_id = uuid.uuid4().hex
+    provided = req.model_dump(exclude_unset=True)
+    updates: dict = {}
+    if "name" in provided:
+        name = (req.name or "").strip()
+        if not name:
+            return JSONResponse(
+                {"error": "name（範本名稱）不可為空"},
+                status_code=422,
+                headers={"X-Request-Id": request_id},
+            )
+        updates["name"] = name
+    for field in ("role_text", "goal_text"):
+        if field in provided:
+            updates[field] = provided[field] or ""
+    if not updates:
+        return JSONResponse(
+            {"error": "沒有要更新的欄位"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    try:
+        ok = db.update_context_template(DB_PATH, template_id, **updates)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "已有同名範本"},
+            status_code=409,
+            headers={"X-Request-Id": request_id},
+        )
+    if not ok:
+        return JSONResponse(
+            {"error": "找不到該範本"},
+            status_code=404,
+            headers={"X-Request-Id": request_id},
+        )
+    logger.info(
+        "context template updated [%s] id=%d fields=%s",
+        request_id, template_id, sorted(updates),
+    )
+    return JSONResponse({"id": template_id}, headers={"X-Request-Id": request_id})
+
+
+@router.delete("/contexts/{template_id}", response_model=None)
+async def delete_context_endpoint(template_id: int) -> JSONResponse:
+    """刪除背景範本。"""
+    request_id = uuid.uuid4().hex
+    if not db.delete_context_template(DB_PATH, template_id):
+        return JSONResponse(
+            {"error": "找不到該範本"},
+            status_code=404,
+            headers={"X-Request-Id": request_id},
+        )
+    logger.info("context template deleted [%s] id=%d", request_id, template_id)
+    return JSONResponse(
+        {"id": template_id, "deleted": True},
         headers={"X-Request-Id": request_id},
     )
 

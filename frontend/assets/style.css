@@ -1187,6 +1187,49 @@ body.is-recording .btn.primary::before {
   outline-offset: 2px;
 }
 
+.tpl-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tpl-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.tpl-action {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms;
+}
+
+.tpl-action:hover:not(:disabled) {
+  border-color: var(--fg);
+  color: var(--fg);
+}
+
+.tpl-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tpl-action-danger:hover:not(:disabled) {
+  border-color: var(--danger-border);
+  color: #991b1b;
+}
+
 .context-sublabel {
   display: block;
   font-size: 12px;
@@ -1326,6 +1369,8 @@ body.is-recording .btn.primary::before {
 }
 
 /* ── 錯誤橫幅(role=alert) ───────────────────────────── */
+/* fixed overlay:banner 是 main.app-shell(grid)的子元素,
+   一進文件流就會被當成 grid item 擠掉 rail 欄位而破版,所以脫離文件流浮在上方 */
 .error-banner {
   display: flex;
   align-items: center;
@@ -1335,11 +1380,14 @@ body.is-recording .btn.primary::before {
   color: #991b1b;
   padding: 10px 14px;
   border-radius: 6px;
-  margin-bottom: 12px;
   font-size: 13px;
-  position: sticky;
-  top: 52px;
-  z-index: 5;
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(680px, calc(100vw - 32px));
+  z-index: 60;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
 }
 
 .error-banner .error-text {

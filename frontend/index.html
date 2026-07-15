@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>letsMeet</title>
-  <link rel="stylesheet" href="assets/style.css?v=todo1" />
+  <link rel="stylesheet" href="assets/style.css?v=ctx1" />
 </head>
 <body>
   <header class="bar">
     <div class="bar-inner">
       <span class="logo">letsMeet</span>
-      <span class="app-version" title="版本">v1.5.0</span>
+      <span class="app-version" title="版本">v1.6.0</span>
       <div class="session-meter" aria-label="會議狀態">
         <span id="connState" class="badge offline">待機</span>
         <span id="elapsed" class="elapsed" aria-label="已錄時間">00:00:00</span>
@@ -80,12 +80,17 @@
                   aria-expanded="false" aria-controls="contextBody">展開</button>
         </div>
         <div id="contextBody" class="context-body" hidden>
-          <div class="preset-row" role="group" aria-label="情境範本">
-            <span class="preset-label">情境範本</span>
-            <button class="preset" type="button" data-preset="client">跟甲方溝通</button>
-            <button class="preset" type="button" data-preset="engineer">跟工程師溝通</button>
-            <button class="preset" type="button" data-preset="pm">跟 PM 溝通</button>
-            <button class="preset" type="button" data-preset="eng_pm">工程師 × PM</button>
+          <div class="preset-row" role="group" aria-label="背景範本">
+            <span class="preset-label">背景範本</span>
+            <span id="tplList" class="tpl-list"></span>
+            <span class="tpl-actions">
+              <button id="btnTplSave" class="tpl-action" type="button"
+                      title="把下方兩欄內容存成一個新範本">＋ 存成範本</button>
+              <button id="btnTplUpdate" class="tpl-action" type="button" disabled
+                      title="用下方兩欄內容覆蓋選中的範本">更新</button>
+              <button id="btnTplDelete" class="tpl-action tpl-action-danger" type="button" disabled
+                      title="刪除選中的範本">刪除</button>
+            </span>
           </div>
           <div class="context-grid">
             <label class="context-field">
@@ -328,6 +333,6 @@
     </span>
   </footer>
 
-  <script src="assets/app.js?v=todo1"></script>
+  <script src="assets/app.js?v=ctx1"></script>
 </body>
 </html>
