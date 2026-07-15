@@ -229,6 +229,46 @@ async def summarize(transcript: str) -> str:
     return await _summarize_async((transcript or "").strip())
 
 
+# ── 會議記錄（結束會議時產一份完整結構化紀錄）────────────────────────────────
+
+MINUTES_SYSTEM_PROMPT = """你是專業會議記錄助理。會議已結束，請把整場逐字稿整理成一份「正式會議記錄」，
+供沒參加的人閱讀。用繁體中文、Markdown 條列，依下列固定結構輸出（沒有內容的段落寫「（無）」）：
+
+## 會議重點
+- 依主題分組，把討論的核心議題與結論濃縮成條列。保留具體數字、時程、金額、人名。
+
+## 決議事項
+- 會議中拍板、達成共識的決定。沒有就寫「（無）」。
+
+## 待辦與負責人
+- 誰要做什麼、期限。格式「[負責人] 事項（期限）」，沒提到負責人或期限就省略該括號。
+
+## 待釐清 / 風險
+- 尚未有結論、需後續追問或有風險的項目。
+
+規則：
+- 只根據逐字稿內容，不要編造沒講到的事。逐字稿模糊處據實寫「（待確認）」。
+- 不要客套話、不要前言結語、不要重複逐字稿原文，只輸出上述四段 Markdown。"""
+
+
+async def generate_minutes(transcript: str, context: str | None = None) -> str:
+    """對外：把整場逐字稿整理成結構化會議記錄 Markdown（供 /api/minutes）。"""
+    text = (transcript or "").strip()
+    if not text:
+        return ""
+    user_content = text
+    ctx = (context or "").strip()
+    if ctx:
+        user_content = f"【會議背景】\n{ctx}\n\n【逐字稿】\n{text}"
+    content = await _chat_completion(
+        MINUTES_SYSTEM_PROMPT,
+        user_content,
+        temperature=0.2,
+        max_tokens=1500,
+    )
+    return content.strip()
+
+
 # ── 會議標題（供儲存表單自動預填）─────────────────────────────────────────────
 
 TITLE_SYSTEM_PROMPT = """你是會議記錄助理。根據提供的會議逐字稿，下一個精簡、具體的標題。

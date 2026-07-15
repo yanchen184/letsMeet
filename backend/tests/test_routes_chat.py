@@ -56,6 +56,42 @@ class TestDigest:
         assert resp.status_code == 504
 
 
+# ── /api/minutes ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.integration
+class TestMinutes:
+    def test_empty_transcript_returns_422(self, client: TestClient) -> None:
+        resp = client.post("/api/minutes", json={"transcript": "   "})
+        assert resp.status_code == 422
+        assert "transcript" in resp.json()["error"]
+
+    def test_returns_minutes(self, client: TestClient, httpx_mock, llm_url: str) -> None:
+        doc = "## 會議重點\n- 交期提前到月底\n\n## 決議事項\n-（無）"
+        httpx_mock.add_response(
+            url=llm_url,
+            method="POST",
+            json={"choices": [{"message": {"content": doc}}]},
+        )
+        resp = client.post(
+            "/api/minutes",
+            json={"transcript": "甲方說交期要提前到月底", "context": "乙方 PM 對甲方"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["minutes"] == doc
+        assert "X-Request-Id" in resp.headers
+
+    def test_llm_http_error_returns_502(self, client: TestClient, httpx_mock, llm_url: str) -> None:
+        httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
+        resp = client.post("/api/minutes", json={"transcript": "甲方說交期"})
+        assert resp.status_code == 502
+
+    def test_llm_timeout_returns_504(self, client: TestClient, httpx_mock, llm_url: str) -> None:
+        httpx_mock.add_exception(httpx.ReadTimeout("timeout"))
+        resp = client.post("/api/minutes", json={"transcript": "甲方說交期"})
+        assert resp.status_code == 504
+
+
 # ── /api/chat ──────────────────────────────────────────────────────────────────
 
 

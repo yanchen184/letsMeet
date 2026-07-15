@@ -43,6 +43,7 @@ from app.config import (
 from app.llm_client import (
     LLMOutputFormatError,
     build_chat_messages,
+    generate_minutes,
     generate_questions,
     generate_title,
     stream_chat,
@@ -238,6 +239,40 @@ async def digest(req: DigestRequest) -> JSONResponse:
             headers={"X-Request-Id": request_id},
         )
     return JSONResponse({"summary": summary}, headers={"X-Request-Id": request_id})
+
+
+class MinutesRequest(BaseModel):
+    transcript: str = Field(..., description="整場會議逐字稿")
+    context: str | None = Field(default=None, description="會議背景，會併入提示")
+
+
+@router.post("/minutes", response_model=None)
+async def minutes(req: MinutesRequest) -> JSONResponse:
+    """結束會議時，把整場逐字稿整理成一份結構化會議記錄 Markdown。"""
+    request_id = uuid.uuid4().hex
+    if not (req.transcript or "").strip():
+        return JSONResponse(
+            {"error": "transcript 不可為空"},
+            status_code=422,
+            headers={"X-Request-Id": request_id},
+        )
+    try:
+        doc = await generate_minutes(req.transcript, req.context)
+    except httpx.TimeoutException:
+        logger.exception("minutes LLM timeout [%s]", request_id)
+        return JSONResponse(
+            {"error": "會議記錄產生超時，請稍後再試"},
+            status_code=504,
+            headers={"X-Request-Id": request_id},
+        )
+    except httpx.HTTPError as exc:
+        logger.exception("minutes LLM HTTP error [%s]: %s", request_id, exc)
+        return JSONResponse(
+            {"error": "會議記錄服務暫時不可用"},
+            status_code=502,
+            headers={"X-Request-Id": request_id},
+        )
+    return JSONResponse({"minutes": doc}, headers={"X-Request-Id": request_id})
 
 
 class MeetingSaveRequest(BaseModel):

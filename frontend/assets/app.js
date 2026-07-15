@@ -58,6 +58,11 @@
     chatStat: $("chatStat"),
     btnSaveMeeting: $("btnSaveMeeting"),
     btnHistory: $("btnHistory"),
+    minutesPanel: $("minutesPanel"),
+    minutesBody: $("minutesBody"),
+    minutesStat: $("minutesStat"),
+    btnDownloadMinutes: $("btnDownloadMinutes"),
+    btnRegenMinutes: $("btnRegenMinutes"),
   };
 
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -96,6 +101,11 @@
     fileCloseWatcher: null,  // dev 餵檔模式:idle watchdog,後端轉完才關 WS
     fileLastActivity: 0,     // dev 餵檔模式:最後一次收到後端訊息的時間戳
     uploadAbort: null,       // 上傳音檔轉錄中的 AbortController;null = 沒在轉
+    // ── 結束會議收尾 ──
+    minutes: "",             // AI 整理出的結構化會議記錄 Markdown
+    finalizing: false,       // 收尾流程進行中,避免重複觸發
+    finalized: false,        // 已跑過收尾 → 逐字稿唯讀
+    meetingDurationSec: 0,   // 這場會議時長(結束時定格,供會議記錄用)
   };
 
   const RECORD_SAMPLE_RATE = 16000; // 與 AudioWorklet targetSampleRate 一致
@@ -376,6 +386,7 @@ registerProcessor('pcm16-writer', PCM16Writer);
     state.audioSamples = 0;
     state.digests = [];
     state.chatHistory = [];
+    resetFinalizeState();
     clearSelection();
     dom.transcript.innerHTML =
       '<p class="placeholder">按「錄音」開始即時轉錄。音訊會傳送至內網伺服器處理，不會送往外部雲端服務。</p>';
@@ -703,6 +714,8 @@ registerProcessor('pcm16-writer', PCM16Writer);
   // ─── WebSocket / 錄音 ────────────────────────────────────────────
   async function startRecording() {
     if (state.isRecording) return;
+    // 若上一場已收尾，重新開錄視為新一場：清掉會議記錄面板（逐字稿沿用累加）
+    if (state.finalized) resetFinalizeState();
     setConn("connecting", "連線中");
     dom.btnStart.disabled = true;
     document.body.classList.add("is-recording");
@@ -830,6 +843,10 @@ registerProcessor('pcm16-writer', PCM16Writer);
     state.audioSource = null;
     state.audioProc = null;
 
+    // 定格會議時長（供會議記錄用），startEpoch 為 0 表示沒真的錄過
+    if (state.startEpoch) {
+      state.meetingDurationSec = Math.floor((Date.now() - state.startEpoch) / 1000);
+    }
     stopElapsed();
     setConn("offline", "待機");
 
@@ -1260,6 +1277,172 @@ registerProcessor('pcm16-writer', PCM16Writer);
     const hh = pad2(d.getHours());
     const mm = pad2(d.getMinutes());
     return `meeting_${y}-${mo}-${da}_${hh}${mm}.${ext}`;
+  }
+
+  // 清空 / 重新開錄時，把收尾面板與狀態歸零
+  function resetFinalizeState() {
+    state.minutes = "";
+    state.finalizing = false;
+    state.finalized = false;
+    state.meetingDurationSec = 0;
+    document.body.classList.remove("is-finalized");
+    if (dom.minutesPanel) dom.minutesPanel.hidden = true;
+    if (dom.minutesBody) dom.minutesBody.innerHTML = "";
+    setMinutesStat("—");
+    if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = true;
+    if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = true;
+  }
+
+  // ─── 結束會議：跑一次 AI 收尾 → 產生完整會議記錄 ──────────────────
+  // 按「結束」後呼叫：① 補產最後一批問題（全文）②/api/minutes 整理結構化
+  // 會議記錄 ③ 呈現可下載面板 ④ 逐字稿轉唯讀。失敗不擋，可「重新整理」重跑。
+  async function finalizeMeeting() {
+    if (state.finalizing) return;
+    const transcript = getFullTranscript();
+    if (!transcript.trim()) return; // 沒逐字稿不收尾
+
+    state.finalizing = true;
+    // 面板亮出來、標記唯讀
+    state.finalized = true;
+    document.body.classList.add("is-finalized");
+    if (dom.minutesPanel) dom.minutesPanel.hidden = false;
+    setMinutesStat("整理中…");
+    if (dom.minutesBody) {
+      dom.minutesBody.innerHTML =
+        '<p class="minutes-loading">AI 正在整理整場逐字稿為會議記錄…</p>';
+    }
+    if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = true;
+    if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = true;
+    refreshAskButton();
+
+    // ① 全文補產一批問題（沒新行就不動）。不擋主流程，失敗吞掉。
+    try {
+      if (state.transcriptLines.length >= MIN_LINES_TO_ASK) {
+        await askQuestions({ source: "auto" });
+      }
+    } catch (_e) { /* 產問失敗不影響會議記錄 */ }
+
+    // ② 產結構化會議記錄
+    try {
+      const resp = await fetch(`${API_BASE}/api/minutes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript, context: buildContext() }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      state.minutes = (data.minutes || "").trim();
+      renderMinutes();
+      setMinutesStat("已完成");
+      if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = !state.minutes;
+    } catch (err) {
+      console.error("minutes failed", err);
+      state.minutes = "";
+      if (dom.minutesBody) {
+        dom.minutesBody.innerHTML =
+          '<p class="minutes-error">會議記錄產生失敗，可按「重新整理」重試。' +
+          '（逐字稿與問題已保留，仍可下載）</p>';
+      }
+      setMinutesStat("失敗");
+      // 失敗時仍允許下載（用逐字稿+問題組，minutes 段標註失敗）
+      if (dom.btnDownloadMinutes) dom.btnDownloadMinutes.disabled = false;
+    } finally {
+      state.finalizing = false;
+      if (dom.btnRegenMinutes) dom.btnRegenMinutes.disabled = false;
+      refreshAskButton();
+    }
+  }
+
+  function setMinutesStat(text) {
+    if (dom.minutesStat) dom.minutesStat.textContent = text;
+  }
+
+  // 把 minutes Markdown 以極簡方式渲染（標題 + 條列），不引入 md 函式庫
+  function renderMinutes() {
+    if (!dom.minutesBody) return;
+    if (!state.minutes) {
+      dom.minutesBody.innerHTML =
+        '<p class="minutes-error">尚無會議記錄。</p>';
+      return;
+    }
+    dom.minutesBody.innerHTML = "";
+    state.minutes.split("\n").forEach((raw) => {
+      const line = raw.trimEnd();
+      if (!line.trim()) return;
+      let el;
+      if (/^#{1,6}\s/.test(line)) {
+        el = document.createElement("h3");
+        el.className = "minutes-h";
+        el.textContent = line.replace(/^#{1,6}\s+/, "");
+      } else if (/^[-*]\s/.test(line)) {
+        el = document.createElement("div");
+        el.className = "minutes-li";
+        el.textContent = line.replace(/^[-*]\s+/, "");
+      } else {
+        el = document.createElement("p");
+        el.className = "minutes-p";
+        el.textContent = line;
+      }
+      dom.minutesBody.appendChild(el);
+    });
+  }
+
+  // 組出完整會議記錄 Markdown（標題/日期/時長/摘要/問題/逐字稿）並下載
+  function downloadMinutes() {
+    if (state.transcriptLines.length === 0) {
+      showError("沒有可下載的內容");
+      return;
+    }
+    const now = new Date();
+    const durSec = state.meetingDurationSec || 0;
+    const questions = state.questionItems || [];
+    const lines = [];
+    lines.push(`# 會議記錄`);
+    lines.push(``);
+    lines.push(`- 產生時間：${now.toLocaleString()}`);
+    if (durSec > 0) lines.push(`- 會議時長：${fmtElapsedLong(durSec)}`);
+    const ctx = buildContext();
+    if (ctx && ctx.trim()) {
+      lines.push(`- 會議背景：${ctx.trim().replace(/\n/g, " ")}`);
+    }
+    lines.push(``);
+    lines.push(`---`);
+    lines.push(``);
+    // 重點摘要（AI 整理的結構化會議記錄）
+    if (state.minutes) {
+      lines.push(state.minutes);
+    } else {
+      lines.push(`## 會議重點`);
+      lines.push(`（AI 會議記錄產生失敗，以下為逐字稿原文）`);
+    }
+    lines.push(``);
+    // 待釐清問題清單
+    if (questions.length) {
+      lines.push(`## 建議追問`);
+      questions.forEach((it, i) => {
+        lines.push(`${i + 1}. ${it.q}`);
+        if (it.why) lines.push(`   - 為什麼問：${it.why}`);
+      });
+      lines.push(``);
+    }
+    // 完整逐字稿（附時間）
+    lines.push(`## 完整逐字稿`);
+    state.transcriptLines.forEach((l) => {
+      lines.push(`- [${fmtElapsed(l.t)}] ${l.text}`);
+    });
+    lines.push(``);
+
+    const md = lines.join("\n");
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = buildMeetingFilename("md");
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   // 把累積的 16-bit PCM(mono)包成標準 WAV blob
@@ -1763,7 +1946,20 @@ registerProcessor('pcm16-writer', PCM16Writer);
     if (state.uploadAbort) { state.uploadAbort.abort(); return; }
     if (state.fileTimer) stopFilePlayback({ keepTranscript: true });
     else stopRecording({ keepTranscript: true, exportAudio: true });
+    // 停止後補一小段延遲讓最後一段逐字稿落地，再跑 AI 收尾產會議記錄。
+    // 若尾段來得晚沒收進來，使用者可按「重新整理」重跑。
+    setTimeout(() => {
+      if (state.transcriptLines.length > 0) finalizeMeeting();
+    }, 1200);
   });
+
+  // 會議記錄下載 / 重新整理
+  if (dom.btnDownloadMinutes) {
+    dom.btnDownloadMinutes.addEventListener("click", downloadMinutes);
+  }
+  if (dom.btnRegenMinutes) {
+    dom.btnRegenMinutes.addEventListener("click", () => finalizeMeeting());
+  }
 
   // 上傳音檔 → 整檔批次轉錄
   if (dom.btnUpload && dom.uploadAudioInput) {

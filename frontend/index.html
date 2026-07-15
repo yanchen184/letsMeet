@@ -130,6 +130,19 @@
         </details>
       </section>
 
+      <section id="minutesPanel" class="panel minutes-panel" aria-labelledby="h-minutes" hidden>
+        <div class="panel-head">
+          <h2 id="h-minutes">會議記錄</h2>
+          <span id="minutesStat" class="stat">—</span>
+        </div>
+        <div id="minutesBody" class="minutes-body" aria-live="polite"></div>
+        <div class="minutes-actions">
+          <button id="btnDownloadMinutes" class="btn primary" type="button" disabled>下載會議記錄 (.md)</button>
+          <button id="btnRegenMinutes" class="btn ghost" type="button" disabled
+                  title="重新讓 AI 整理整場逐字稿">重新整理</button>
+        </div>
+      </section>
+
       <aside class="side-stack" aria-label="AI 輔助區">
         <section class="panel questions-panel" aria-labelledby="h-questions">
           <div class="panel-head">
