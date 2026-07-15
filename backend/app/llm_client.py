@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -175,6 +176,23 @@ def _summarize_sync_placeholder(older: str) -> str:
 
 # ── LLM 呼叫 ──────────────────────────────────────────────────────────────────
 
+# ── LLM 呼叫重試 ──────────────────────────────────────────────────────────────
+# 線上 LLM 與其他服務共用 GPU，間歇性 500（contention）短暫重試即可吃掉。
+# timeout 不重試：一次 timeout 已耗掉 LLM_TIMEOUT，再等一輪只會拖垮上游。
+
+LLM_RETRY_ATTEMPTS = 2        # 首發之外最多再試 2 次
+LLM_RETRY_BACKOFF_SECONDS = 0.5
+
+
+def _should_retry_llm(exc: Exception) -> bool:
+    """5xx 與連線層錯誤重試；timeout 與 4xx 不重試。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    if isinstance(exc, httpx.TimeoutException):
+        return False
+    return isinstance(exc, httpx.TransportError)
+
+
 async def _chat_completion(
     system: str,
     user: str,
@@ -199,9 +217,21 @@ async def _chat_completion(
 
     url = f"{LLM_BASE_URL.rstrip('/')}/chat/completions"
     async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+        for attempt in range(LLM_RETRY_ATTEMPTS + 1):
+            try:
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                if attempt >= LLM_RETRY_ATTEMPTS or not _should_retry_llm(exc):
+                    raise
+                logger.warning(
+                    "LLM 呼叫失敗（%s），%.1fs 後重試 %d/%d",
+                    exc, LLM_RETRY_BACKOFF_SECONDS * (attempt + 1),
+                    attempt + 1, LLM_RETRY_ATTEMPTS,
+                )
+                await asyncio.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
     try:
         return data["choices"][0]["message"]["content"]
@@ -368,21 +398,53 @@ async def stream_chat(messages: list[dict[str, str]]) -> AsyncIterator[str]:
     url = f"{LLM_BASE_URL.rstrip('/')}/chat/completions"
 
     async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
-        async with client.stream("POST", url, headers=headers, json=payload) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"].get("content")
-                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                    continue
-                if delta:
-                    yield delta
+        yielded_any = False
+        for attempt in range(LLM_RETRY_ATTEMPTS + 1):
+            try:
+                async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                    resp.raise_for_status()
+
+                    # 線上 LLM（vLLM）會無視 stream:true 回完整 JSON —— 走非 SSE fallback
+                    ctype = resp.headers.get("content-type", "")
+                    if "text/event-stream" not in ctype:
+                        body = await resp.aread()
+                        try:
+                            data = json.loads(body)
+                            content = data["choices"][0]["message"]["content"]
+                        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+                            raise LLMOutputFormatError(
+                                f"LLM non-SSE response unparseable: {body[:200]!r}"
+                            ) from exc
+                        if content:
+                            yielded_any = True
+                            yield content
+                        return
+
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content")
+                        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                            continue
+                        if delta:
+                            yielded_any = True
+                            yield delta
+                return
+            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                # 只在「還沒吐過任何 delta」時重試；串到一半失敗直接拋，避免重複內容
+                if yielded_any or attempt >= LLM_RETRY_ATTEMPTS or not _should_retry_llm(exc):
+                    raise
+                logger.warning(
+                    "LLM 串流開啟失敗（%s），%.1fs 後重試 %d/%d",
+                    exc, LLM_RETRY_BACKOFF_SECONDS * (attempt + 1),
+                    attempt + 1, LLM_RETRY_ATTEMPTS,
+                )
+                await asyncio.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
 
 # ── JSON 容錯解析 ─────────────────────────────────────────────────────────────

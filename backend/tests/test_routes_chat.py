@@ -46,7 +46,8 @@ class TestDigest:
         assert "X-Request-Id" in resp.headers
 
     def test_llm_http_error_returns_502(self, client: TestClient, httpx_mock, llm_url: str) -> None:
-        httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
+        for _ in range(3):  # 首發 + 2 次重試全部 500
+            httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
         resp = client.post("/api/digest", json={"transcript": "甲方說交期"})
         assert resp.status_code == 502
 
@@ -82,7 +83,8 @@ class TestMinutes:
         assert "X-Request-Id" in resp.headers
 
     def test_llm_http_error_returns_502(self, client: TestClient, httpx_mock, llm_url: str) -> None:
-        httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
+        for _ in range(3):  # 首發 + 2 次重試全部 500
+            httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
         resp = client.post("/api/minutes", json={"transcript": "甲方說交期"})
         assert resp.status_code == 502
 
@@ -147,3 +149,65 @@ class TestChat:
         # SSE：連線已建立，錯誤走 data 事件而非 HTTP code
         assert resp.status_code == 200
         assert "超時" in resp.text
+
+    def test_non_sse_json_response_falls_back_to_single_delta(
+        self, client: TestClient, httpx_mock, llm_url: str
+    ) -> None:
+        """LLM 服務無視 stream:true 回完整 JSON（線上實測行為）→ 內容仍要一次吐出。"""
+        httpx_mock.add_response(
+            url=llm_url,
+            method="POST",
+            json={"choices": [{"message": {"content": "你好，我是 AI"}}]},
+        )
+        resp = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "嗨"}]},
+        )
+        assert resp.status_code == 200
+        assert '"delta": "你好，我是 AI"' in resp.text
+        assert "data: [DONE]" in resp.text
+
+    def test_chat_retries_on_500_then_streams(
+        self, client: TestClient, httpx_mock, llm_url: str
+    ) -> None:
+        """間歇 500（GPU contention）→ 開串流前重試一次成功。"""
+        httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
+        httpx_mock.add_response(
+            url=llm_url,
+            method="POST",
+            status_code=200,
+            content=_sse_body(["重", "試", "成", "功"]),
+            headers={"Content-Type": "text/event-stream"},
+        )
+        resp = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "嗨"}]},
+        )
+        assert resp.status_code == 200
+        assert '"delta": "重"' in resp.text
+        assert '"delta": "功"' in resp.text
+        assert "data: [DONE]" in resp.text
+
+
+@pytest.mark.integration
+class TestLLMRetry:
+    def test_digest_retries_on_500_then_succeeds(
+        self, client: TestClient, httpx_mock, llm_url: str
+    ) -> None:
+        httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
+        httpx_mock.add_response(
+            url=llm_url,
+            method="POST",
+            json={"choices": [{"message": {"content": "- 重點一"}}]},
+        )
+        resp = client.post("/api/digest", json={"transcript": "甲方說交期要提前"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["summary"] == "- 重點一"
+
+    def test_digest_exhausted_retries_returns_502(
+        self, client: TestClient, httpx_mock, llm_url: str
+    ) -> None:
+        for _ in range(3):  # 首發 + 2 次重試全部 500
+            httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
+        resp = client.post("/api/digest", json={"transcript": "甲方說交期要提前"})
+        assert resp.status_code == 502

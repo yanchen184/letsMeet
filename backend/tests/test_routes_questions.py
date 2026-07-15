@@ -122,7 +122,8 @@ class TestQuestionsErrorHandling:
         httpx_mock,
         llm_url: str,
     ) -> None:
-        httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
+        for _ in range(3):  # 首發 + 2 次重試全部 500
+            httpx_mock.add_response(url=llm_url, method="POST", status_code=500)
 
         resp = client.post(
             "/api/questions",
