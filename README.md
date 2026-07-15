@@ -2,7 +2,7 @@
 
 **會議現場即時逐字稿 + AI 追問助手。**
 
-開會時按錄音,你方聽到對方說的話會即時轉成逐字稿;按「產生問題」,AI 從你的視角生成 3-5 條你應該追問的問題,避免會議結束才想起來該問什麼。
+開會時按錄音,你方聽到對方說的話會即時轉成逐字稿;按「產生問題」,AI 從你的視角生成 3-5 條你應該追問的問題,避免會議結束才想起來該問什麼。結束會議後自動歸檔:AI 產標題、整理結構化會議記錄、抽出待辦(負責人 / 事項 / 期限)進跨會議追蹤看板,整個會議庫可全文搜尋。
 
 ![letsMeet cockpit 介面示意圖](frontend/letsmeet-cockpit.png)
 
@@ -11,6 +11,14 @@
 ![letsMeet cockpit 實際運行畫面:產問完成後的建議追問與頁尾模型資訊](frontend/letsmeet-cockpit-real.png)
 
 > **實際運行畫面**(餵入一段合約洽談逐字稿後的真實輸出):中間自動整理出帶時間戳的「重點摘要」(交期 2023/2/15、驗收標準、付款 30 天 50% 尾款、待釐清項目),右側「建議追問」是 AI 從你的視角產出的追問(驗收標準指標、第一期交貨日期),每題附帶判斷依據。最下方頁尾標示本次實際使用的兩個模型 — 逐字稿 `Breeze-ASR-25-ct2`、AI `Llama-Breeze2-8B-Instruct`。
+
+![會議庫全文搜尋:輸入 ISMS 即時列出命中會議與高亮片段](docs/images/fts-search.png)
+
+> **全文搜尋**:在歷史會議輸入關鍵字,FTS5 跨標題 / 摘要 / 逐字稿 / 會議記錄 / 追問即時檢索,命中片段黃底高亮;受 PIN 保護的會議只列 meta、不外洩內文片段。
+
+![跨會議待辦追蹤看板:每筆待辦帶負責人、期限與來源會議,打勾即結案](docs/images/action-board.png)
+
+> **待辦追蹤**:歸檔時 AI 自動從逐字稿抽出待辦(負責人 / 事項 / 期限),「待辦追蹤」分頁聚合所有會議的未結項,打勾即結案並同步回資料庫。
 
 ---
 
@@ -21,11 +29,17 @@
 - **AI 追問**:把累積逐字稿丟給任何 OpenAI-compatible LLM(預設接內網自架 Breeze2,可換 OpenAI/Ollama/LM Studio)
 - **即時 Chat**:邊開會邊跟 AI 來回對談 — 問「對方剛剛對交期怎麼說」、討論「接下來該追問什麼」,回覆 SSE streaming 逐字浮現,對話只存前端記憶體
 - **重點摘要折疊**:每次產問順手把該批新發言壓成條列重點,主畫面只看摘要、原文預設折疊,需要核對時再展開
-- **會議記錄持久化**:開完會把標題、重點摘要、完整逐字稿、產出的追問存進 SQLite,之後在「歷史會議」清單翻閱、展開重看(無登入,用填寫者標記歸屬)
-- **PIN 保護**:存會議時可設 4 位數 PIN;清單只回 `is_protected` 旗標不外洩內容,要看詳情得帶對 PIN(缺/錯一律 401),由建立者自行設定(內網 demo,明碼存)
+- **結構化會議記錄**:結束會議(或上傳音檔轉錄完成)自動把整場逐字稿整理成一份 Markdown 會議記錄(結論、決議、討論脈絡),不用事後自己整理
+- **現場可編輯**:重點摘要與會議記錄在畫面上點擊即改,AI 整理錯的地方當場修,存檔存的是修過的版本
+- **結束自動歸檔**:按「結束會議」自動存進會議庫(AI 順手產一句標題預填,可覆寫),不再依賴「記得按儲存」
+- **會議庫全文搜尋**:SQLite FTS5(trigram)跨標題、摘要、逐字稿、會議記錄、追問全文檢索,命中片段以高亮顯示;短於 3 字的查詢自動退回子字串比對,中文兩字詞照樣搜得到
+- **待辦結構化 + 跨會議追蹤**:歸檔時 AI 從逐字稿抽出待辦(負責人 / 事項 / 期限)存進 DB;「歷史會議 → 待辦追蹤」聚合所有會議的未結待辦,打勾即結案 — 「上次說好的事做了沒」一頁看完
+- **會議記錄持久化**:標題、重點摘要、完整逐字稿、會議記錄、追問、待辦全存 SQLite,之後在「歷史會議」清單翻閱、展開重看(無登入,用填寫者標記歸屬)
+- **PIN 保護**:存會議時可設 4 位數 PIN;清單與搜尋只回 `is_protected` 旗標、不外洩內容與命中片段,要看詳情得帶對 PIN(缺/錯一律 401),由建立者自行設定(內網 demo,明碼存)
 - **產問去重**:把畫面上已有的問題一併餵給 LLM,叫它別重複或產出意思相近的題目,寧可少問也不灌水
 - **增量聚焦**:游標只把「上次產問後的新發言」送 LLM,舊內容轉成背景摘要,問題緊扣對話最新部分
 - **雙欄脈絡**:「我的角色與重點」+「會議資訊」兩欄,引導 AI 站在你的視角提問
+- **GPU 加速轉錄**:`DEVICE=cuda` + `COMPUTE_TYPE=int8_float16` 時 ASR 上 GPU,實測 RTF 從 2.85 降到 0.27~0.30(1 小時錄音約 18 分鐘轉完)
 - **錄音匯出 WAV**:停止錄音時把整場音訊打包成標準 WAV 下載,留存原始錄音
 - **滑動視窗摘要**:超過 6000 字會議自動摘要前段,保留最近 4000 字原文給 LLM
 - **零 build step 前端**:純 vanilla HTML/JS,沒有 React/Vue/Webpack,改 CSS 直接 reload
@@ -167,6 +181,26 @@ Server 回:
 
 > 前端對每段摘要各自呼叫一次。某段失敗時該段顯示「(這段摘要產生失敗)」+「重新生成」按鈕,點了只重跑那一段(不影響已成功的其他段)。
 
+### `POST /api/minutes`
+
+結束會議時把**整場**逐字稿整理成結構化會議記錄 Markdown(前端在結束會議 / 上傳轉錄完成後自動呼叫)。
+
+```json
+{ "transcript": "整場會議逐字稿", "context": "(可選) 會議背景" }
+```
+
+回應:`{ "minutes": "## 會議記錄\n..." }`。錯誤碼:`422`(transcript 為空)/ `502` / `504`。
+
+### `POST /api/title`
+
+用逐字稿產一句會議標題,供儲存表單自動預填(使用者可覆寫)。
+
+```json
+{ "transcript": "會議逐字稿全文" }
+```
+
+回應:`{ "title": "與甲方確認交期與驗收標準" }`。錯誤碼:`422` / `502` / `504`。
+
 ### `POST /api/chat`
 
 跟 AI 即時對談。**SSE streaming** 回覆,逐 token 吐。對話歷史由前端帶(存記憶體),逐字稿 / 會議背景 / 已產問當脈絡注入。
@@ -204,11 +238,22 @@ data: [DONE]
   "summary": "(可選) 重點摘要",
   "transcript": "(可選) 完整原始逐字稿",
   "questions": [{"q": "驗收標準?", "why": "未說明"}],
+  "minutes": "(可選) 結構化會議記錄 Markdown",
   "pin_code": "(可選) 4 位數字 PIN;設了之後讀詳情需帶對 PIN"
 }
 ```
 
 回應:`{"id": 1}`。`422`:title 或 owner 為空,或 `pin_code` 非 4 位數字。
+
+### `PUT /api/meetings/{id}`
+
+部分更新既有會議(自動歸檔後補會議記錄 / 現場編輯摘要 / 改標題)。**只更新 request 有出現的欄位**;可改 `title` / `owner` / `summary` / `transcript` / `questions` / `minutes` / `pin_code`。該場已設 PIN 時須帶 `pin` 驗證。
+
+```json
+{ "summary": "改過的重點摘要", "pin": "1234" }
+```
+
+回應:`{"id": 1}`。`404`:找不到 / `401`:PIN 錯誤或未提供 / `422`:title 給了但為空,或 `pin_code` 非 4 位數字。
 
 ### `GET /api/meetings`
 
@@ -218,9 +263,39 @@ data: [DONE]
 { "meetings": [{"id": 1, "title": "與甲方交期會議", "owner": "YC", "created_at": "2026-05-28T...", "is_protected": true}] }
 ```
 
+### `GET /api/meetings/search?q=關鍵字&limit=50`
+
+會議庫全文搜尋(FTS5 trigram),跨標題 / 摘要 / 逐字稿 / 會議記錄 / 追問。查詢短於 3 字時自動退回 LIKE 子字串比對(trigram 至少要 3 字,中文兩字詞靠這條)。回輕量 meta + 命中片段 `snippet`(命中處以 `[ ]` 標記,前端渲染成高亮);**受 PIN 保護的場 `snippet` 一律為 `null`**,只回 meta,詳情仍要驗 PIN。`limit` 上限 100。
+
+```json
+{ "meetings": [{"id": 2, "title": "0715ISMS 會議", "owner": "Vanessa", "created_at": "...", "is_protected": false, "snippet": " … 本次[ISMS]稽核範圍 … "}], "query": "ISMS" }
+```
+
+### `POST /api/meetings/{id}/action-items`
+
+從逐字稿抽出結構化待辦(負責人 / 事項 / 期限),**覆寫**存進該場會議(前端在自動歸檔後呼叫)。該場已設 PIN 時須帶 `pin`。LLM 抽取失敗回空陣列,不擋歸檔流程。
+
+```json
+{ "transcript": "整場逐字稿", "context": "(可選) 會議背景", "pin": "(該場已設 PIN 時必帶)" }
+```
+
+回應:`{"meeting_id": 26, "action_items": [{"id": 2, "assignee": "小王", "task": "整理需求規格書寄給客戶", "due": "下週五", "status": "open", ...}]}`。`404` / `401`(PIN 錯)。
+
+### `GET /api/meetings/{id}/action-items`
+
+單場會議的待辦清單(含已結案;只回待辦文字,不含逐字稿,不受 PIN 限制)。
+
+### `GET /api/action-items?status=open`
+
+跨會議待辦追蹤看板:所有會議的未結待辦,每筆附來源 `meeting_title` / `meeting_created_at`,依會議時間新到舊排。目前只支援 `status=open`,帶其他值回 `422`。
+
+### `PATCH /api/action-items/{item_id}`
+
+改單筆待辦狀態(打勾結案 / 重開):`{"status": "done"}`。`422`:status 非 `open`/`done` / `404`:找不到該筆。
+
 ### `GET /api/meetings/{id}`
 
-單場會議完整內容(摘要＋逐字稿＋追問)。受保護的會議需帶 `?pin=1234`。回應**不含 `pin_code`**。
+單場會議完整內容(摘要＋逐字稿＋會議記錄＋追問)。受保護的會議需帶 `?pin=1234`。回應**不含 `pin_code`**。
 
 - `404`:找不到該場會議
 - `401`:會議受保護,但未提供或 PIN 錯誤 → `{"error": "PIN 錯誤或未提供", "pin_required": true}`
@@ -230,6 +305,7 @@ data: [DONE]
   "id": 1, "title": "與甲方交期會議", "owner": "YC",
   "context": "...", "created_at": "2026-05-28T...",
   "summary": "- 重點一\n- 重點二", "transcript": "完整逐字稿",
+  "minutes": "## 會議記錄\n...",
   "questions": [{"q": "驗收標準?", "why": "未說明"}]
 }
 ```
@@ -250,7 +326,7 @@ data: [DONE]
 |---|---|---|
 | `STREAM_MODEL` | `phate334/Breeze-ASR-25-ct2` | ASR 模型(HuggingFace ID) |
 | `DEVICE` | `cpu` | `cpu` / `cuda` / `auto` |
-| `COMPUTE_TYPE` | `int8` | `int8`(CPU)/ `float16`(GPU) |
+| `COMPUTE_TYPE` | `int8` | `int8`(CPU)/ `int8_float16` 或 `float16`(GPU)。GPU 實測 `int8_float16` RTF 0.27~0.30 |
 | `ASR_BACKEND` | `faster-whisper` | `faster-whisper` / `transformers` |
 | `MAX_CONNECTIONS` | `20` | 同時 WS 連線上限 |
 | `LLM_BASE_URL` | `http://10.1.1.7:31367/v1` | OpenAI-compatible endpoint |
@@ -289,7 +365,7 @@ python -m http.server 8082
 cd backend && pytest --cov=app --cov-report=term-missing -q
 ```
 
-目前 94 passed、~90% 覆蓋率。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
+目前 120 passed。需要真 ASR 模型的路徑標 `# pragma: no cover`,屬 integration smoke。
 
 ---
 
@@ -300,4 +376,4 @@ cd backend && pytest --cov=app --cov-report=term-missing -q
 1. **完全本地**:音訊不離開你的內網
 2. **會議中就有 AI 追問**:不是事後摘要,是讓你**現場**問出對的問題
 3. **接你自己的 LLM**:Breeze2 / Llama / GPT-4 / 任何 OpenAI-compatible 都行
-4. **不到 1000 行 code**:前端 + 後端加起來,改起來不痛
+4. **零框架、零 build**:前後端合計約 5000 行 vanilla JS + FastAPI,沒有 React/Webpack/ORM,單人可維護
